@@ -1,0 +1,28 @@
+name: python
+version: 0.0.0
+description: Reviews Python for shell injection, unsafe YAML, and disabled TLS verification.
+
+triggers:
+  manual: true
+  files_changed:
+    - "**/*.py"
+
+runtime:
+  name: node
+  version: "22"
+  command:
+    - dist/index.js
+
+permissions:
+  enforcement: advisory
+  filesystem:
+    read:
+      - .
+    write:
+      - .adversary/results
+  network: false
+  environment:
+    allow: []
+
+findings:
+  format: adversary.review.v1
