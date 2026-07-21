@@ -7,6 +7,10 @@ triggers:
   files_changed:
     - "**/*.py"
 
+detection:
+  files:
+    - "**/*.py"
+
 runtime:
   name: node
   version: "22"
