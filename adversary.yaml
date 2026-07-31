@@ -1,4 +1,4 @@
-name: python
+name: python/security
 version: 0.0.4
 description: Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.
 
