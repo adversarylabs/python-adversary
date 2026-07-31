@@ -44,67 +44,193 @@ export interface AdversarySpec {
 export declare const spec: {
     readonly id: "python";
     readonly displayName: "Python";
-    readonly description: "Reviews Python for shell injection, unsafe YAML, and disabled TLS verification.";
+    readonly description: "Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.";
     readonly files: ["**/*.py"];
     readonly rules: [{
         readonly id: "python.shell-true";
-        readonly title: "Subprocess executes through a shell";
-        readonly summary: "Subprocess executes through a shell";
+        readonly title: "subprocess uses shell=True with a dynamic command";
+        readonly summary: "subprocess uses shell=True with a dynamic command";
         readonly category: "security";
         readonly severity: "critical";
         readonly confidence: "high";
-        readonly whyItMatters: "Subprocess executes through a shell weakens an important security boundary.";
-        readonly impact: "The repository may behave insecurely, unreliably, or differently from the reviewed configuration.";
+        readonly whyItMatters: "shell=True enables OS command injection on dynamic strings.";
+        readonly impact: "Attacker-controlled input can execute arbitrary shell.";
         readonly recommendation: "Pass an argument list with shell=False.";
         readonly complexity: "small";
-        readonly tags: ["security", "shell-true"];
+        readonly tags: ["security", "shell"];
         readonly match: {
             readonly kind: "content";
             readonly files: ["**/*.py"];
             readonly pattern: {
-                readonly pattern: "subprocess\\.(?:run|Popen|call|check_output)\\([^\\n]*shell\\s*=\\s*True";
+                readonly pattern: "shell\\s*=\\s*True";
+                readonly flags: "i";
+            };
+            readonly requires: [];
+        };
+    }, {
+        readonly id: "python.os-system";
+        readonly title: "os.system or os.popen with dynamic command";
+        readonly summary: "os.system or os.popen with dynamic command";
+        readonly category: "security";
+        readonly severity: "critical";
+        readonly confidence: "high";
+        readonly whyItMatters: "os.system always goes through the shell.";
+        readonly impact: "Command injection via string-built shell invocations.";
+        readonly recommendation: "Use subprocess.run with an argv list.";
+        readonly complexity: "small";
+        readonly tags: ["security", "os-system"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly pattern: {
+                readonly pattern: "os\\.(?:system|popen)\\s*\\(\\s*(?:f[\\\"']|[^\\\"']*[+%]|\\w+\\s*\\+)";
+                readonly flags: "i";
+            };
+            readonly requires: [];
+        };
+    }, {
+        readonly id: "python.pickle-loads";
+        readonly title: "Untrusted pickle or unsafe torch.load";
+        readonly summary: "Untrusted pickle or unsafe torch.load";
+        readonly category: "security";
+        readonly severity: "critical";
+        readonly confidence: "high";
+        readonly whyItMatters: "Pickle is an execution format; untrusted pickle is RCE.";
+        readonly impact: "Arbitrary code execution on load.";
+        readonly recommendation: "Use JSON/msgpack; never unpickle untrusted data.";
+        readonly complexity: "small";
+        readonly tags: ["security", "pickle"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly pattern: {
+                readonly pattern: "(?:pickle\\.(?:loads?|Unpickler)|cPickle\\.loads?|joblib\\.load|torch\\.load\\s*\\([^)]*weights_only\\s*=\\s*False)\\s*\\(";
                 readonly flags: "i";
             };
             readonly requires: [];
         };
     }, {
         readonly id: "python.unsafe-yaml";
-        readonly title: "PyYAML loads objects unsafely";
-        readonly summary: "PyYAML loads objects unsafely";
+        readonly title: "yaml.load without SafeLoader";
+        readonly summary: "yaml.load without SafeLoader";
         readonly category: "security";
-        readonly severity: "high";
+        readonly severity: "critical";
         readonly confidence: "high";
-        readonly whyItMatters: "PyYAML loads objects unsafely weakens an important security boundary.";
-        readonly impact: "The repository may behave insecurely, unreliably, or differently from the reviewed configuration.";
-        readonly recommendation: "Use yaml.safe_load or SafeLoader.";
+        readonly whyItMatters: "Historical full-loader RCE on untrusted YAML (CVE-2017-18342).";
+        readonly impact: "Arbitrary code execution via crafted YAML.";
+        readonly recommendation: "Use yaml.safe_load or SafeLoader exclusively.";
         readonly complexity: "small";
-        readonly tags: ["security", "unsafe-yaml"];
+        readonly tags: ["security", "yaml"];
         readonly match: {
             readonly kind: "content";
             readonly files: ["**/*.py"];
             readonly pattern: {
-                readonly pattern: "yaml\\.load\\([^\\n]*\\)";
+                readonly pattern: "yaml\\.load\\s*\\(";
+                readonly flags: "i";
+            };
+            readonly requires: [];
+        };
+    }, {
+        readonly id: "python.eval-exec-dynamic";
+        readonly title: "eval or exec on non-literal input";
+        readonly summary: "eval or exec on non-literal input";
+        readonly category: "security";
+        readonly severity: "critical";
+        readonly confidence: "high";
+        readonly whyItMatters: "Direct code injection when dynamic data reaches eval/exec.";
+        readonly impact: "Arbitrary Python execution.";
+        readonly recommendation: "Use ast.literal_eval for data, or redesign.";
+        readonly complexity: "small";
+        readonly tags: ["security", "eval"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly pattern: {
+                readonly pattern: "(?:(?<!literal_)eval|(?<!literal_)exec)\\s*\\(\\s*\\w+";
                 readonly flags: "i";
             };
             readonly requires: [];
         };
     }, {
         readonly id: "python.tls-disabled";
-        readonly title: "HTTP request disables certificate verification";
-        readonly summary: "HTTP request disables certificate verification";
+        readonly title: "TLS verification disabled";
+        readonly summary: "TLS verification disabled";
         readonly category: "security";
         readonly severity: "high";
         readonly confidence: "high";
-        readonly whyItMatters: "HTTP request disables certificate verification weakens an important security boundary.";
-        readonly impact: "The repository may behave insecurely, unreliably, or differently from the reviewed configuration.";
-        readonly recommendation: "Keep TLS verification enabled.";
+        readonly whyItMatters: "MITM on credentials and tokens.";
+        readonly impact: "Credential interception on HTTPS calls.";
+        readonly recommendation: "Keep verification on; fix CA trust properly.";
         readonly complexity: "small";
-        readonly tags: ["security", "tls-disabled"];
+        readonly tags: ["security", "tls"];
         readonly match: {
             readonly kind: "content";
             readonly files: ["**/*.py"];
             readonly pattern: {
-                readonly pattern: "requests\\.(?:get|post|put|delete|request)\\([^\\n]*verify\\s*=\\s*False";
+                readonly pattern: "verify\\s*=\\s*False|ssl\\._create_unverified_context";
+                readonly flags: "i";
+            };
+            readonly requires: [];
+        };
+    }, {
+        readonly id: "python.sql-format-fstring";
+        readonly title: "SQL built with f-string or format into execute";
+        readonly summary: "SQL built with f-string or format into execute";
+        readonly category: "security";
+        readonly severity: "high";
+        readonly confidence: "high";
+        readonly whyItMatters: "String-built SQL enables injection.";
+        readonly impact: "Database compromise via attacker-controlled SQL.";
+        readonly recommendation: "Use bound parameters only.";
+        readonly complexity: "small";
+        readonly tags: ["security", "sqli"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly pattern: {
+                readonly pattern: "\\.(?:execute|executemany)\\s*\\(\\s*(?:f[\\\"']|[\\\"'][^\\\"']*\\{)";
+                readonly flags: "i";
+            };
+            readonly requires: [];
+        };
+    }, {
+        readonly id: "python.flask-debug";
+        readonly title: "Web framework debug or reload enabled";
+        readonly summary: "Web framework debug or reload enabled";
+        readonly category: "security";
+        readonly severity: "high";
+        readonly confidence: "high";
+        readonly whyItMatters: "Debug mode can expose interactive debuggers and secrets.";
+        readonly impact: "Remote code execution or secret disclosure in production.";
+        readonly recommendation: "Never enable debug in production.";
+        readonly complexity: "small";
+        readonly tags: ["security", "debug"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly pattern: {
+                readonly pattern: "\\.run\\s*\\([^)]*debug\\s*=\\s*True|FLASK_DEBUG\\s*=\\s*[\\\"']?1|uvicorn\\.run\\s*\\([^)]*reload\\s*=\\s*True";
+                readonly flags: "i";
+            };
+            readonly requires: [];
+        };
+    }, {
+        readonly id: "python.requests-no-timeout";
+        readonly title: "HTTP client call without timeout";
+        readonly summary: "HTTP client call without timeout";
+        readonly category: "reliability";
+        readonly severity: "medium";
+        readonly confidence: "high";
+        readonly whyItMatters: "requests has no default timeout; hung peers hang workers.";
+        readonly impact: "Production outages from blocked workers.";
+        readonly recommendation: "Pass timeout= on every call or session default.";
+        readonly complexity: "small";
+        readonly tags: ["reliability", "timeout"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly pattern: {
+                readonly pattern: "requests\\.(?:get|post|put|patch|delete|head|request)\\s*\\((?![^)]*timeout\\s*=)";
                 readonly flags: "i";
             };
             readonly requires: [];

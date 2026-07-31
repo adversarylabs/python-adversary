@@ -1,6 +1,6 @@
 name: python
-version: 0.0.3
-description: Reviews Python for shell injection, unsafe YAML, and disabled TLS verification.
+version: 0.0.4
+description: Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.
 
 triggers:
   manual: true
