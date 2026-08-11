@@ -248,6 +248,58 @@ export const spec = {
                 },
                 "requires": []
             }
+        },
+        {
+            "id": "python.sqlalchemy-offline-postgres-literal",
+            "title": "Offline PostgreSQL literal rendering may use the wrong backslash mode",
+            "summary": "Offline PostgreSQL literal rendering may use the wrong backslash mode",
+            "category": "correctness",
+            "severity": "medium",
+            "confidence": "medium",
+            "whyItMatters": "SQLAlchemy normally derives PostgreSQL backslash behavior from a live connection. An offline dialect can retain the wrong default and silently alter backslash-containing values when generated quotes are stripped.",
+            "impact": "Rendered values can be changed before interpolation, causing queries to match the wrong rows or persist different text than the caller supplied.",
+            "recommendation": "Prefer bound parameters. If offline literal rendering is unavoidable, explicitly configure the PostgreSQL backslash mode and cover quotes and backslashes with regression tests.",
+            "complexity": "small",
+            "tags": [
+                "correctness",
+                "sqlalchemy",
+                "postgresql"
+            ],
+            "match": {
+                "kind": "content",
+                "files": [
+                    "**/*.py"
+                ],
+                "excludeFiles": [
+                    "**/*_test.py",
+                    "**/test_*.py",
+                    "**/tests/**"
+                ],
+                "pattern": {
+                    "pattern": "\\.statement_compiler\\s*\\(\\s*[^,\\n]+,\\s*None\\s*\\)[\\s\\S]{0,1200}?\\.render_literal_value\\s*\\([^\\n]+\\)\\s*\\[\\s*1\\s*:\\s*-1\\s*\\]",
+                    "flags": "i"
+                },
+                "requires": [
+                    {
+                        "pattern": "\\bsqlalchemy\\b",
+                        "flags": "i"
+                    },
+                    {
+                        "pattern": "(?:\\.get_dialect\\s*\\(\\s*\\)|postgresql\\.dialect\\s*\\(\\s*\\)|url\\.get_dialect\\s*\\(\\s*\\)\\s*\\(\\s*\\))",
+                        "flags": "i"
+                    }
+                ],
+                "excludes": [
+                    {
+                        "pattern": "_?backslash_escapes\\s*=\\s*False",
+                        "flags": "i"
+                    },
+                    {
+                        "pattern": "(?:if|assert)[^\\n]*dialect\\.name[^\\n]*(?:mysql|mariadb)[^\\n]*:\\s*\\r?\\n\\s+return\\b",
+                        "flags": "i"
+                    }
+                ]
+            }
         }
     ]
 };

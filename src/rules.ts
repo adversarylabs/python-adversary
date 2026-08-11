@@ -1,4 +1,4 @@
-import { Adversary, Confidence, Severity, type ObservationInit } from "@adversarylabs/sdk";
+import { Adversary, Severity, type ObservationInit } from "@adversarylabs/sdk";
 import { spec, type RuleSpec } from "./spec.js";
 
 const byId = new Map<string, RuleSpec>(spec.rules.map((rule) => [rule.id, rule]));
@@ -20,7 +20,7 @@ export function registerRules(app: Adversary): void {
           recommendation: rule.recommendation,
           remediation: { complexity: rule.complexity },
           tags: rule.tags,
-          confidence: Confidence.High,
+          confidence: rule.confidence,
         };
       },
     });

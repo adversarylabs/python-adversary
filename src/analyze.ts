@@ -44,7 +44,11 @@ function evaluate(rule: RuleSpec, sources: SourceFile[], allPaths: string[]): De
     return [{ rule, file: triggers[0] ?? ".", line: 1, snippet: triggers[0] ?? "", label: rule.title, data: { triggerFiles: triggers.slice(0, 10), requiredFiles: match.requiredFiles } }];
   }
 
-  const matchingSources = sources.filter((file) => match.files.some((glob) => matchesGlob(file.path, glob)));
+  const matchingSources = sources.filter(
+    (file) =>
+      match.files.some((glob) => matchesGlob(file.path, glob)) &&
+      !(match.kind === "content" && match.excludeFiles?.some((glob) => matchesGlob(file.path, glob))),
+  );
   if (match.kind === "missing-content") {
     return matchingSources.flatMap((file) => {
       if (!test(file.source, match.trigger) || test(file.source, match.required)) return [];
@@ -55,7 +59,10 @@ function evaluate(rule: RuleSpec, sources: SourceFile[], allPaths: string[]): De
   }
 
   return matchingSources.flatMap((file) => {
-    if (!match.requires.every((pattern) => test(file.source, pattern))) return [];
+    if (
+      !match.requires.every((pattern) => test(file.source, pattern)) ||
+      match.excludes?.some((pattern) => test(file.source, pattern))
+    ) return [];
     const location = locate(file.source, match.pattern);
     if (location === undefined) return [];
     return [{ rule, file: file.path, ...location, label: rule.title, data: { matchedPattern: match.pattern.pattern } }];
