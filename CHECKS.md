@@ -169,6 +169,17 @@ Public grounding: [CVE-2017-18342](https://nvd.nist.gov/vuln/detail/CVE-2017-183
 | **Public examples** | requests documentation explicitly advises always setting a timeout; hung-worker postmortems |
 | **Remediation** | Pass `timeout=` on every call or set it at session/transport level |
 
+### `python.sqlalchemy-offline-postgres-literal`
+
+| | |
+| --- | --- |
+| **What** | Offline SQLAlchemy PostgreSQL literal rendering strips generated quotes while retaining the default backslash mode |
+| **Why** | PostgreSQL backslash behavior is normally derived from a live connection; an offline dialect can silently change backslash-containing values |
+| **Looks for** | Production Python that obtains an offline dialect, builds `statement_compiler(..., None)`, calls `render_literal_value`, and slices `[1:-1]` without explicitly disabling PostgreSQL backslash escaping or restricting the renderer to MySQL/MariaDB |
+| **Stays quiet when** | Queries use bound parameters; the renderer is statically limited to MySQL/MariaDB, where backslash doubling is intentional; PostgreSQL mode is explicitly configured; generated quotes are retained; code is test-only |
+| **Public examples** | [Apache Superset review](https://github.com/apache/superset/pull/33924#discussion_r3693512209) and [resolution](https://github.com/apache/superset/pull/33924#discussion_r3717371929) |
+| **Remediation** | Prefer bound parameters; otherwise configure the target PostgreSQL semantics explicitly and test quotes and backslashes |
+
 ---
 
 ## Out of scope

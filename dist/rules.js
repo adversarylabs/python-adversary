@@ -1,4 +1,4 @@
-import { Confidence, Severity } from "@adversarylabs/sdk";
+import { Severity } from "@adversarylabs/sdk";
 import { spec } from "./spec.js";
 const byId = new Map(spec.rules.map((rule) => [rule.id, rule]));
 export function registerRules(app) {
@@ -18,7 +18,7 @@ export function registerRules(app) {
                     recommendation: rule.recommendation,
                     remediation: { complexity: rule.complexity },
                     tags: rule.tags,
-                    confidence: Confidence.High,
+                    confidence: rule.confidence,
                 };
             },
         });

@@ -6,8 +6,10 @@ export interface MatchExpression {
 interface ContentMatch {
     kind: "content";
     files: string[];
+    excludeFiles?: string[];
     pattern: MatchExpression;
     requires: MatchExpression[];
+    excludes?: MatchExpression[];
 }
 interface MissingContentMatch {
     kind: "missing-content";
@@ -234,6 +236,41 @@ export declare const spec: {
                 readonly flags: "i";
             };
             readonly requires: [];
+        };
+    }, {
+        readonly id: "python.sqlalchemy-offline-postgres-literal";
+        readonly title: "Offline PostgreSQL literal rendering may use the wrong backslash mode";
+        readonly summary: "Offline PostgreSQL literal rendering may use the wrong backslash mode";
+        readonly category: "correctness";
+        readonly severity: "medium";
+        readonly confidence: "medium";
+        readonly whyItMatters: "SQLAlchemy normally derives PostgreSQL backslash behavior from a live connection. An offline dialect can retain the wrong default and silently alter backslash-containing values when generated quotes are stripped.";
+        readonly impact: "Rendered values can be changed before interpolation, causing queries to match the wrong rows or persist different text than the caller supplied.";
+        readonly recommendation: "Prefer bound parameters. If offline literal rendering is unavoidable, explicitly configure the PostgreSQL backslash mode and cover quotes and backslashes with regression tests.";
+        readonly complexity: "small";
+        readonly tags: ["correctness", "sqlalchemy", "postgresql"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly excludeFiles: ["**/*_test.py", "**/test_*.py", "**/tests/**"];
+            readonly pattern: {
+                readonly pattern: "\\.statement_compiler\\s*\\(\\s*[^,\\n]+,\\s*None\\s*\\)[\\s\\S]{0,1200}?\\.render_literal_value\\s*\\([^\\n]+\\)\\s*\\[\\s*1\\s*:\\s*-1\\s*\\]";
+                readonly flags: "i";
+            };
+            readonly requires: [{
+                readonly pattern: "\\bsqlalchemy\\b";
+                readonly flags: "i";
+            }, {
+                readonly pattern: "(?:\\.get_dialect\\s*\\(\\s*\\)|postgresql\\.dialect\\s*\\(\\s*\\)|url\\.get_dialect\\s*\\(\\s*\\)\\s*\\(\\s*\\))";
+                readonly flags: "i";
+            }];
+            readonly excludes: [{
+                readonly pattern: "_?backslash_escapes\\s*=\\s*False";
+                readonly flags: "i";
+            }, {
+                readonly pattern: "(?:if|assert)[^\\n]*dialect\\.name[^\\n]*(?:mysql|mariadb)[^\\n]*:\\s*\\r?\\n\\s+return\\b";
+                readonly flags: "i";
+            }];
         };
     }];
 };
