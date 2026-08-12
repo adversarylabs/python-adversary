@@ -5,7 +5,7 @@ import { createApp } from "../src/index.ts";
 
 const fixture = (name: string) => new URL(`../fixtures/${name}`, import.meta.url).pathname;
 const review = (name: string, raw = false) => createApp().run({ input: { source: { path: fixture(name) } }, includeRawObservations: raw });
-const ruleCases = [{"key": "shell-true", "id": "python.shell-true"}, {"key": "os-system", "id": "python.os-system"}, {"key": "pickle-loads", "id": "python.pickle-loads"}, {"key": "unsafe-yaml", "id": "python.unsafe-yaml"}, {"key": "eval-exec-dynamic", "id": "python.eval-exec-dynamic"}, {"key": "tls-disabled", "id": "python.tls-disabled"}, {"key": "sql-format-fstring", "id": "python.sql-format-fstring"}, {"key": "flask-debug", "id": "python.flask-debug"}, {"key": "requests-no-timeout", "id": "python.requests-no-timeout"}, {"key": "sqlalchemy-offline-postgres-literal", "id": "python.sqlalchemy-offline-postgres-literal"}];
+const ruleCases = [{"key": "shell-true", "id": "python.shell-true"}, {"key": "os-system", "id": "python.os-system"}, {"key": "pickle-loads", "id": "python.pickle-loads"}, {"key": "unsafe-yaml", "id": "python.unsafe-yaml"}, {"key": "eval-exec-dynamic", "id": "python.eval-exec-dynamic"}, {"key": "tls-disabled", "id": "python.tls-disabled"}, {"key": "sql-format-fstring", "id": "python.sql-format-fstring"}, {"key": "flask-debug", "id": "python.flask-debug"}, {"key": "tempfile-mktemp", "id": "python.tempfile-mktemp"}, {"key": "requests-no-timeout", "id": "python.requests-no-timeout"}, {"key": "sqlalchemy-offline-postgres-literal", "id": "python.sqlalchemy-offline-postgres-literal"}];
 
 test("offline PostgreSQL finding describes value corruption without claiming injection", async () => {
   const output = await review("rules/sqlalchemy-offline-postgres-literal/vulnerable", true);
@@ -38,6 +38,13 @@ test("accepts a repository without applicable configuration", async () => {
   assert.deepEqual(output.findings, []);
   assert.equal(output.assessment?.risk, "none");
   assert.equal(output.opinion?.ship, true);
+});
+
+test("tempfile.mktemp evidence points to the call", async () => {
+  const output = await review("rules/tempfile-mktemp/vulnerable", true);
+  const observation = output.rawObservations?.find((item) => item.ruleId === "python.tempfile-mktemp");
+  assert.equal(observation?.location?.line, 5);
+  assert.equal(observation?.location?.snippet, "path = tempfile.mktemp(suffix=\".log\")");
 });
 
 test("output ordering and protocol envelope are deterministic", async () => {

@@ -243,6 +243,34 @@ export const spec = {
       }
     },
     {
+      "id": "python.tempfile-mktemp",
+      "title": "tempfile.mktemp creates a race-prone path",
+      "summary": "tempfile.mktemp creates a race-prone path",
+      "category": "security",
+      "severity": "medium",
+      "confidence": "high",
+      "whyItMatters": "tempfile.mktemp returns a pathname without atomically creating it, leaving a race before the caller opens the path.",
+      "impact": "Another process can claim or redirect the path, causing data disclosure, overwrite, or use of an attacker-controlled file.",
+      "recommendation": "Use TemporaryFile, NamedTemporaryFile, TemporaryDirectory, or mkstemp so the temporary object is created atomically.",
+      "complexity": "small",
+      "tags": [
+        "security",
+        "tempfile",
+        "race-condition"
+      ],
+      "match": {
+        "kind": "content",
+        "files": [
+          "**/*.py"
+        ],
+        "pattern": {
+          "pattern": "^[ \\t]*(?!#)(?:(?:return|yield)\\s+|[A-Za-z_][\\w.\\[\\]'\\\"]*\\s*=\\s*|[A-Za-z_][\\w.]*\\s*\\([^#'\\\"\\r\\n]*)tempfile\\.mktemp\\s*\\(",
+          "flags": "m"
+        },
+        "requires": []
+      }
+    },
+    {
       "id": "python.requests-no-timeout",
       "title": "HTTP client call without timeout",
       "summary": "HTTP client call without timeout",

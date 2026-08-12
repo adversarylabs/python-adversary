@@ -141,11 +141,11 @@ Public grounding: [CVE-2017-18342](https://nvd.nist.gov/vuln/detail/CVE-2017-183
 | | |
 | --- | --- |
 | **What** | Use of deprecated `tempfile.mktemp` or predictable temp paths |
-| **Why** | Race conditions / temp file hijack |
-| **Looks for** | `mktemp(` |
-| **Stays quiet when** | `NamedTemporaryFile` / `mkstemp` |
-| **Public examples** | Python tempfile docs deprecation |
-| **Remediation** | Use secure tempfile APIs |
+| **Why** | `mktemp` returns a pathname without creating it, leaving a race in which another process can claim or redirect that path |
+| **Looks for** | A real `tempfile.mktemp(` call in Python code |
+| **Stays quiet when** | The text appears in a comment or string; a project helper happens to be named `mktemp`; `NamedTemporaryFile`, `TemporaryFile`, `TemporaryDirectory`, or `mkstemp` is used |
+| **Public examples** | [LLVM migration and approvals](https://github.com/llvm/llvm-project/pull/210123); [BleachBit migration](https://github.com/bleachbit/bleachbit/pull/2175) |
+| **Remediation** | Choose a secure tempfile API that atomically creates the needed file or directory |
 
 ### `python.hashlib-md5-sha1-security`
 
