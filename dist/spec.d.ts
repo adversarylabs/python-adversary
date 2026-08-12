@@ -23,6 +23,10 @@ interface MissingFileMatch {
     triggerFiles: string[];
     requiredFiles: string[];
 }
+interface DefaultEmptyDestructiveSyncMatch {
+    kind: "default-empty-destructive-sync";
+    files: string[];
+}
 export interface RuleSpec {
     id: string;
     title: string;
@@ -35,7 +39,7 @@ export interface RuleSpec {
     recommendation: string;
     complexity: "trivial" | "small" | "medium" | "large";
     tags: string[];
-    match: ContentMatch | MissingContentMatch | MissingFileMatch;
+    match: ContentMatch | MissingContentMatch | MissingFileMatch | DefaultEmptyDestructiveSyncMatch;
 }
 export interface AdversarySpec {
     id: string;
@@ -258,6 +262,22 @@ export declare const spec: {
                 readonly flags: "i";
             };
             readonly requires: [];
+        };
+    }, {
+        readonly id: "python.default-empty-destructive-sync";
+        readonly title: "Missing response collection can trigger destructive reconciliation";
+        readonly summary: "Missing response collection can trigger destructive reconciliation";
+        readonly category: "correctness";
+        readonly severity: "high";
+        readonly confidence: "medium";
+        readonly whyItMatters: "Defaulting an absent response collection to an empty iterable erases the distinction between a valid empty page and a malformed success envelope. Cleanup based on the resulting seen set can then delete every local record.";
+        readonly impact: "A transient or malformed upstream response can cause valid local state to be removed during synchronization.";
+        readonly recommendation: "Validate that the response contains a collection before reconciliation. Treat an explicitly present empty collection as valid, but fail closed when the field is absent or has the wrong type.";
+        readonly complexity: "small";
+        readonly tags: ["correctness", "synchronization", "destructive-cleanup"];
+        readonly match: {
+            readonly kind: "default-empty-destructive-sync";
+            readonly files: ["**/*.py"];
         };
     }, {
         readonly id: "python.sqlalchemy-offline-postgres-literal";

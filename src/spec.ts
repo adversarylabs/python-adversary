@@ -12,10 +12,11 @@ interface ContentMatch {
 }
 interface MissingContentMatch { kind: "missing-content"; files: string[]; trigger: MatchExpression; required: MatchExpression }
 interface MissingFileMatch { kind: "missing-file"; triggerFiles: string[]; requiredFiles: string[] }
+interface DefaultEmptyDestructiveSyncMatch { kind: "default-empty-destructive-sync"; files: string[] }
 export interface RuleSpec {
   id: string; title: string; summary: string; category: string; severity: Severity; confidence: Confidence;
   whyItMatters: string; impact: string; recommendation: string; complexity: "trivial" | "small" | "medium" | "large"; tags: string[];
-  match: ContentMatch | MissingContentMatch | MissingFileMatch;
+  match: ContentMatch | MissingContentMatch | MissingFileMatch | DefaultEmptyDestructiveSyncMatch;
 }
 export interface AdversarySpec { id: string; displayName: string; description: string; files: string[]; rules: RuleSpec[] }
 
@@ -296,6 +297,29 @@ export const spec = {
           "flags": "i"
         },
         "requires": []
+      }
+    },
+    {
+      "id": "python.default-empty-destructive-sync",
+      "title": "Missing response collection can trigger destructive reconciliation",
+      "summary": "Missing response collection can trigger destructive reconciliation",
+      "category": "correctness",
+      "severity": "high",
+      "confidence": "medium",
+      "whyItMatters": "Defaulting an absent response collection to an empty iterable erases the distinction between a valid empty page and a malformed success envelope. Cleanup based on the resulting seen set can then delete every local record.",
+      "impact": "A transient or malformed upstream response can cause valid local state to be removed during synchronization.",
+      "recommendation": "Validate that the response contains a collection before reconciliation. Treat an explicitly present empty collection as valid, but fail closed when the field is absent or has the wrong type.",
+      "complexity": "small",
+      "tags": [
+        "correctness",
+        "synchronization",
+        "destructive-cleanup"
+      ],
+      "match": {
+        "kind": "default-empty-destructive-sync",
+        "files": [
+          "**/*.py"
+        ]
       }
     },
     {
