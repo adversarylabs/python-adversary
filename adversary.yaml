@@ -1,5 +1,5 @@
 name: lang/python
-version: 0.0.7
+version: 0.0.8
 description: Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.
 
 triggers:
