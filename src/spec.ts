@@ -6,6 +6,7 @@ interface ContentMatch {
   files: string[];
   excludeFiles?: string[];
   pattern: MatchExpression;
+  anchors?: MatchExpression[];
   requires: MatchExpression[];
   excludes?: MatchExpression[];
 }
@@ -327,6 +328,16 @@ export const spec = {
           "pattern": "\\.statement_compiler\\s*\\(\\s*[^,\\n]+,\\s*None\\s*\\)[\\s\\S]{0,1200}?\\.render_literal_value\\s*\\([^\\n]+\\)\\s*\\[\\s*1\\s*:\\s*-1\\s*\\]",
           "flags": "i"
         },
+        "anchors": [
+          {
+            "pattern": "\\.statement_compiler\\s*\\(\\s*[^,\\n]+,\\s*None\\s*\\)",
+            "flags": "i"
+          },
+          {
+            "pattern": "\\.render_literal_value\\s*\\([^\\n]+\\)\\s*\\[\\s*1\\s*:\\s*-1\\s*\\]",
+            "flags": "i"
+          }
+        ],
         "requires": [
           {
             "pattern": "\\bsqlalchemy\\b",
