@@ -278,6 +278,29 @@ export const spec = {
             }
         },
         {
+            "id": "python.default-empty-destructive-sync",
+            "title": "Missing response collection can trigger destructive reconciliation",
+            "summary": "Missing response collection can trigger destructive reconciliation",
+            "category": "correctness",
+            "severity": "high",
+            "confidence": "medium",
+            "whyItMatters": "Defaulting an absent response collection to an empty iterable erases the distinction between a valid empty page and a malformed success envelope. Cleanup based on the resulting seen set can then delete every local record.",
+            "impact": "A transient or malformed upstream response can cause valid local state to be removed during synchronization.",
+            "recommendation": "Validate that the response contains a collection before reconciliation. Treat an explicitly present empty collection as valid, but fail closed when the field is absent or has the wrong type.",
+            "complexity": "small",
+            "tags": [
+                "correctness",
+                "synchronization",
+                "destructive-cleanup"
+            ],
+            "match": {
+                "kind": "default-empty-destructive-sync",
+                "files": [
+                    "**/*.py"
+                ]
+            }
+        },
+        {
             "id": "python.sqlalchemy-offline-postgres-literal",
             "title": "Offline PostgreSQL literal rendering may use the wrong backslash mode",
             "summary": "Offline PostgreSQL literal rendering may use the wrong backslash mode",

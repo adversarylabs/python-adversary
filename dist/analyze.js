@@ -50,6 +50,11 @@ function evaluate(rule, sources, allPaths) {
             return [];
         return [{ rule, file: triggers[0] ?? ".", line: 1, snippet: triggers[0] ?? "", label: rule.title, data: { triggerFiles: triggers.slice(0, 10), requiredFiles: match.requiredFiles } }];
     }
+    if (match.kind === "default-empty-destructive-sync") {
+        return sources
+            .filter((file) => match.files.some((glob) => matchesGlob(file.path, glob)))
+            .flatMap((file) => findDefaultEmptyDestructiveSync(rule, file));
+    }
     const matchingSources = sources.filter((file) => match.files.some((glob) => matchesGlob(file.path, glob)) &&
         !(match.kind === "content" && match.excludeFiles?.some((glob) => matchesGlob(file.path, glob))));
     if (match.kind === "missing-content") {
@@ -71,6 +76,99 @@ function evaluate(rule, sources, allPaths) {
             return [];
         return [{ rule, file: file.path, ...location, label: rule.title, data: { matchedPattern: match.pattern.pattern } }];
     });
+}
+function findDefaultEmptyDestructiveSync(rule, file) {
+    const detections = [];
+    for (const block of findFunctionBlocks(file.source)) {
+        const defaults = findEmptyCollectionDefaults(block.body, block.start);
+        for (const candidate of defaults) {
+            const flow = destructiveSyncFlow(block.body, candidate, block.start);
+            if (flow === undefined)
+                continue;
+            const semanticLines = [candidate.index, flow.seenIndex, flow.cleanupIndex]
+                .map((index) => file.source.slice(0, index).split(/\r?\n/).length);
+            const line = file.status === "modified"
+                ? semanticLines.find((candidateLine) => file.changedLines.has(candidateLine))
+                : semanticLines[0];
+            if (line === undefined)
+                continue;
+            detections.push({
+                rule,
+                file: file.path,
+                line,
+                snippet: file.source.split(/\r?\n/)[line - 1]?.trim().slice(0, 240) ?? "",
+                label: `${candidate.collection} defaults a missing response collection to empty before destructive cleanup`,
+                data: { collectionVariable: candidate.collection, responseField: candidate.items },
+            });
+        }
+    }
+    return detections;
+}
+function findFunctionBlocks(source) {
+    const blocks = [];
+    const definition = /^(?<indent>[ \t]*)(?:async\s+)?def\s+[A-Za-z_]\w*\s*\([^\n]*\)\s*(?:->\s*[^:]+)?\s*:\s*(?:#.*)?$/gm;
+    for (const match of source.matchAll(definition)) {
+        if (match.index === undefined)
+            continue;
+        const indent = match.groups?.indent?.length ?? 0;
+        const bodyStart = source.indexOf("\n", match.index) + 1;
+        if (bodyStart <= 0)
+            continue;
+        let end = source.length;
+        let cursor = bodyStart;
+        while (cursor < source.length) {
+            const nextNewline = source.indexOf("\n", cursor);
+            const lineEnd = nextNewline < 0 ? source.length : nextNewline;
+            const line = source.slice(cursor, lineEnd);
+            if (line.trim() !== "" && (line.match(/^[ \t]*/)?.[0].length ?? 0) <= indent) {
+                end = cursor;
+                break;
+            }
+            cursor = nextNewline < 0 ? source.length : nextNewline + 1;
+        }
+        blocks.push({ body: source.slice(bodyStart, end), start: bodyStart });
+    }
+    return blocks;
+}
+function findEmptyCollectionDefaults(body, offset) {
+    const defaults = [];
+    const patterns = [
+        /^[ \t]*([A-Za-z_]\w*)\s*=\s*[A-Za-z_]\w*\.get\(\s*["']([A-Za-z_]\w*)["']\s*,\s*(?:\[\s*\]|\(\s*\))\s*\)/gm,
+        /^[ \t]*([A-Za-z_]\w*)\s*=\s*getattr\(\s*[A-Za-z_]\w*\s*,\s*["']([A-Za-z_]\w*)["']\s*,\s*(?:\[\s*\]|\(\s*\))\s*\)/gm,
+    ];
+    for (const pattern of patterns) {
+        for (const match of body.matchAll(pattern)) {
+            if (match.index === undefined || match[1] === undefined || match[2] === undefined)
+                continue;
+            defaults.push({ collection: match[1], items: match[2], index: offset + match.index, text: match[0] });
+        }
+    }
+    return defaults.sort((left, right) => left.index - right.index);
+}
+function destructiveSyncFlow(body, candidate, offset) {
+    const relative = candidate.index - offset;
+    const after = body.slice(relative + candidate.text.length);
+    const variable = escapeRegExp(candidate.collection);
+    const seenAssignment = after.match(new RegExp(`\\b([A-Za-z_]\\w*)\\s*=\\s*(?:\\{|set\\s*\\()[\\s\\S]{0,240}?\\bfor\\s+[A-Za-z_]\\w*\\s+in\\s+${variable}\\b`));
+    if (seenAssignment === null || seenAssignment[1] === undefined || seenAssignment.index === undefined)
+        return undefined;
+    const seen = seenAssignment[1];
+    const cleanupTarget = escapeRegExp(seen);
+    const cleanup = new RegExp(`(?:\\bfor\\s+[A-Za-z_]\\w*\\s+in[\\s\\S]{0,300}?\\bif\\s+[A-Za-z_]\\w*[^\\n]*\\bnot\\s+in\\s+${cleanupTarget}\\b[\\s\\S]{0,240}?\\.(?:delete(?:_item|_many)?|remove|unlink)\\s*\\(|\\.(?:delete(?:_item|_many)?|remove|unlink)\\s*\\([^\\n]{0,160}\\bnot\\s+in\\s+${cleanupTarget}\\b)`, "i");
+    const cleanupMatch = cleanup.exec(after);
+    if (cleanupMatch?.index === undefined)
+        return undefined;
+    const method = /\.(?:delete(?:_item|_many)?|remove|unlink)\s*\(/i.exec(cleanupMatch[0]);
+    if (method?.index === undefined)
+        return undefined;
+    const afterOffset = candidate.index + candidate.text.length;
+    return {
+        seenIndex: afterOffset + seenAssignment.index,
+        cleanupIndex: afterOffset + cleanupMatch.index + method.index,
+    };
+}
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 async function changedSource(ctx, path) {
     const base = ctx.change?.baseRef;

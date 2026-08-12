@@ -12,7 +12,7 @@ const execute = promisify(execFile);
 
 const fixture = (name: string) => new URL(`../fixtures/${name}`, import.meta.url).pathname;
 const review = (name: string, raw = false) => createApp().run({ input: { source: { path: fixture(name) } }, includeRawObservations: raw });
-const ruleCases = [{"key": "shell-true", "id": "python.shell-true"}, {"key": "os-system", "id": "python.os-system"}, {"key": "pickle-loads", "id": "python.pickle-loads"}, {"key": "unsafe-yaml", "id": "python.unsafe-yaml"}, {"key": "eval-exec-dynamic", "id": "python.eval-exec-dynamic"}, {"key": "tls-disabled", "id": "python.tls-disabled"}, {"key": "sql-format-fstring", "id": "python.sql-format-fstring"}, {"key": "flask-debug", "id": "python.flask-debug"}, {"key": "tempfile-mktemp", "id": "python.tempfile-mktemp"}, {"key": "requests-no-timeout", "id": "python.requests-no-timeout"}, {"key": "sqlalchemy-offline-postgres-literal", "id": "python.sqlalchemy-offline-postgres-literal"}];
+const ruleCases = [{"key": "shell-true", "id": "python.shell-true"}, {"key": "os-system", "id": "python.os-system"}, {"key": "pickle-loads", "id": "python.pickle-loads"}, {"key": "unsafe-yaml", "id": "python.unsafe-yaml"}, {"key": "eval-exec-dynamic", "id": "python.eval-exec-dynamic"}, {"key": "tls-disabled", "id": "python.tls-disabled"}, {"key": "sql-format-fstring", "id": "python.sql-format-fstring"}, {"key": "flask-debug", "id": "python.flask-debug"}, {"key": "tempfile-mktemp", "id": "python.tempfile-mktemp"}, {"key": "requests-no-timeout", "id": "python.requests-no-timeout"}, {"key": "default-empty-destructive-sync", "id": "python.default-empty-destructive-sync"}, {"key": "sqlalchemy-offline-postgres-literal", "id": "python.sqlalchemy-offline-postgres-literal"}];
 
 test("offline PostgreSQL finding describes value corruption without claiming injection", async () => {
   const output = await review("rules/sqlalchemy-offline-postgres-literal/vulnerable", true);
@@ -128,6 +128,57 @@ test("a newly added Python file remains fully eligible", async () => {
     await writeFile(join(root, "app.py"), 'import requests\nrequests.get("https://example.test/new")\n');
     const output = await changedReview(root, ["app.py"]);
     assert.equal(output.findings.some((finding) => finding.ruleId === "python.requests-no-timeout"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("valid empty response collections remain eligible for intentional cleanup", async () => {
+  const output = await review("rules/default-empty-destructive-sync/clean");
+  assert.equal(
+    output.findings.some((finding) => finding.ruleId === "python.default-empty-destructive-sync"),
+    false,
+  );
+});
+
+test("default-empty destructive sync findings are change-local", async () => {
+  const legacy = `def sync(response, store):
+    entries = response.get("records", [])
+    seen = {entry["id"] for entry in entries}
+    for saved in store.all():
+        if saved.id not in seen:
+            store.delete(saved)
+`;
+  const root = await gitRepository({ "sync.py": legacy });
+  try {
+    await writeFile(join(root, "sync.py"), `${legacy}\n# document synchronization ownership\n`);
+    const unrelated = await changedReview(root, ["sync.py"]);
+    assert.equal(
+      unrelated.findings.some((finding) => finding.ruleId === "python.default-empty-destructive-sync"),
+      false,
+    );
+
+    await writeFile(
+      join(root, "sync.py"),
+      legacy.replace('response.get("records", [])', 'response.get("records", ())'),
+    );
+    const changed = await changedReview(root, ["sync.py"]);
+    const observation = changed.rawObservations?.find(
+      (item) => item.ruleId === "python.default-empty-destructive-sync",
+    );
+    assert.equal(observation?.location?.line, 2);
+    assert.equal(observation?.evidence?.responseField, "records");
+
+    await writeFile(
+      join(root, "sync.py"),
+      legacy.replace("store.delete(saved)", "store.delete_item(saved)"),
+    );
+    const cleanupChanged = await changedReview(root, ["sync.py"]);
+    const cleanupObservation = cleanupChanged.rawObservations?.find(
+      (item) => item.ruleId === "python.default-empty-destructive-sync",
+    );
+    assert.equal(cleanupObservation?.location?.line, 6);
+    assert.equal(cleanupObservation?.location?.snippet, "store.delete_item(saved)");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -77,6 +77,16 @@ Public grounding: [CVE-2017-18342](https://nvd.nist.gov/vuln/detail/CVE-2017-183
 
 ## High
 
+### `python.default-empty-destructive-sync`
+
+| | |
+| --- | --- |
+| **What** | Synchronization code defaults a missing response collection to empty and uses it to drive destructive cleanup |
+| **Why** | A malformed success envelope becomes indistinguishable from a valid empty page, so reconciliation can remove every local record |
+| **Looks for** | A response field read with `.get(..., [])` or `getattr(..., [])`, a seen-set derived from that collection, and deletion of local records absent from the set in the same function |
+| **Stays quiet when** | The collection is required and validated before cleanup; the server explicitly supplies an empty collection; the empty default is used only for optional metadata or non-destructive processing |
+| **Remediation** | Validate field presence and collection type before reconciliation; fail closed on malformed envelopes while accepting an explicitly present empty collection |
+
 ### `python.tls-disabled`
 
 | | |
