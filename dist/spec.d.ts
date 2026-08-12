@@ -217,6 +217,27 @@ export declare const spec: {
             readonly requires: [];
         };
     }, {
+        readonly id: "python.tempfile-mktemp";
+        readonly title: "tempfile.mktemp creates a race-prone path";
+        readonly summary: "tempfile.mktemp creates a race-prone path";
+        readonly category: "security";
+        readonly severity: "medium";
+        readonly confidence: "high";
+        readonly whyItMatters: "tempfile.mktemp returns a pathname without atomically creating it, leaving a race before the caller opens the path.";
+        readonly impact: "Another process can claim or redirect the path, causing data disclosure, overwrite, or use of an attacker-controlled file.";
+        readonly recommendation: "Use TemporaryFile, NamedTemporaryFile, TemporaryDirectory, or mkstemp so the temporary object is created atomically.";
+        readonly complexity: "small";
+        readonly tags: ["security", "tempfile", "race-condition"];
+        readonly match: {
+            readonly kind: "content";
+            readonly files: ["**/*.py"];
+            readonly pattern: {
+                readonly pattern: "^[ \\t]*(?!#)(?:(?:return|yield)\\s+|[A-Za-z_][\\w.\\[\\]'\\\"]*\\s*=\\s*|[A-Za-z_][\\w.]*\\s*\\([^#'\\\"\\r\\n]*)tempfile\\.mktemp\\s*\\(";
+                readonly flags: "m";
+            };
+            readonly requires: [];
+        };
+    }, {
         readonly id: "python.requests-no-timeout";
         readonly title: "HTTP client call without timeout";
         readonly summary: "HTTP client call without timeout";

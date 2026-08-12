@@ -16,6 +16,7 @@ Review Python for shell injection, unsafe deserialization, disabled TLS, and SQL
 - pickle/yaml unsafe load
 - verify=False TLS
 - SQL string building
+- Race-prone Python standard-library APIs with secure direct replacements
 
 ## Out of scope (not a miss for this adversary)
 
