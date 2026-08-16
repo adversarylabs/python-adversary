@@ -1,41 +1,21 @@
-# python
+# Python adversary
 
-**python** reviews Python source for **shell injection, unsafe deserialization (pickle/YAML), disabled TLS, SQL string building, and hung HTTP clients**.
+Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.
 
-It is a **language security reviewer**, not a style linter. When it reports, code likely enables RCE, MITM, or injection with high confidence.
+## Goals
 
-## What it does
+The adversary is designed to produce a small number of high-confidence,
+actionable findings grounded in concrete repository evidence. Its review should
+be deterministic where possible, explicit about impact, and quiet when the
+available evidence does not justify a finding.
 
-1. **Discovers** `*.py` files (skipping common vendor trees).
-2. **Runs deterministic detectors** for dangerous APIs and patterns.
-3. **Synthesizes a review** with file:line evidence.
-4. Optionally **enhances** with a model when provided.
+## Scope
 
-It never executes the scanned project as the product under review, never installs dependencies into it, and never needs network access to the target repository.
+It evaluates Python source for command and code execution, deserialization, SQL construction, TLS, HTTP timeouts, temporary files, template safety, weak hashing, and destructive synchronization defaults.
 
-## What it detects
+The complete detector or review inventory is maintained in
+[CHECKS.md](CHECKS.md).
 
-Every **shipped rule id**, severity, and short description lives in **[CHECKS.md](CHECKS.md)**.
+## Boundaries
 
-Highlights:
-
-| Area | Examples |
-| --- | --- |
-| Injection | shell=True, os.system, SQL f-strings |
-| Deserialization | pickle.loads, yaml.load without SafeLoader, eval/exec |
-| Transport | verify=False |
-| Reliability | requests without timeout |
-
-### Ownership boundaries
-
-| Concern | Owned by |
-| --- | --- |
-| Poetry/pip lock supply chain | `poetry` package-manager adversaries |
-| Generic secret scanning | [`security/secrets`](https://github.com/adversarylabs/secrets-adversary) |
-| Dockerfile Python bases | [`container/dockerfile`](https://github.com/adversarylabs/dockerfile-adversary) |
-
-## Precision stance
-
-- **High confidence** only for deterministic, evidence-backed patterns.
-- Clean fixtures must stay quiet; vulnerable fixtures must fire.
-- Prefer missing a weak signal over a false positive on normal production code.
+It owns framework- or language-specific review in this domain. Infrastructure, CI, dependency-manager, and unrelated application concerns remain with specialist adversaries.
