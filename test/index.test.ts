@@ -392,6 +392,52 @@ def synchronize(config):`,
   );
 });
 
+test("OAuth bearer proof preserves response, helper, attachment, and token-lifetime identity", async () => {
+  const consumers = [
+    "    inventory.users.sync(api_session)",
+    "    inventory.devices.sync(api_session)",
+  ];
+  const responseReassigned = oauthProgram(consumers).replace(
+    "    response.raise_for_status()",
+    "    response = config.cached_response\n    response.raise_for_status()",
+  );
+  const helperShadowed = oauthProgram(consumers).replace(
+    "    bearer_token = _mint_oauth_bearer(api_session, config)",
+    "    _mint_oauth_bearer = config.static_token_factory\n    bearer_token = _mint_oauth_bearer(api_session, config)",
+  );
+  const freshBeforeUse = oauthProgram([
+    "    bearer_token = _mint_oauth_bearer(api_session, config)",
+    '    api_session.headers.update({"Authorization": f"Bearer {bearer_token}"})',
+    ...consumers,
+  ]);
+  const refreshBetweenStages = oauthProgram([
+    consumers[0]!,
+    "    bearer_token = _mint_oauth_bearer(api_session, config)",
+    '    api_session.headers.update({"Authorization": f"Bearer {bearer_token}"})',
+    consumers[1]!,
+  ]);
+  const unrelatedAttachmentFields = oauthProgram(consumers).replace(
+    '    api_session.headers.update({"Authorization": f"Bearer {bearer_token}"})',
+    '    api_session.headers.update({"Authorization": "Basic fixed", "scheme": "Bearer", "debug": bearer_token})',
+  );
+
+  for (const [index, source] of [
+    responseReassigned,
+    helperShadowed,
+    freshBeforeUse,
+    refreshBetweenStages,
+    unrelatedAttachmentFields,
+  ].entries()) {
+    assert.equal(
+      (await reviewSource(source)).findings.some(
+        (finding) => finding.ruleId === "python.oauth-client-credentials-reuse",
+      ),
+      false,
+      `identity/lifetime variant ${index}`,
+    );
+  }
+});
+
 test("OAuth bearer reachability and refresh installation must precede repeated use on the same path", async () => {
   const deadAfterReturn = oauthProgram([
     "    return",

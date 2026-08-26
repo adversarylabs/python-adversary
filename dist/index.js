@@ -17630,7 +17630,7 @@ function findOAuthClientCredentialsReuse(rule, file) {
   const functions = findFunctionBlocks(executable);
   const requestsAliases = requestModuleAliases(executable);
   if (requestsAliases.size === 0) return [];
-  const helpers = functions.flatMap((fn) => oauthMintHelpers(fn, executable, requestsAliases));
+  const helpers = functions.flatMap((fn) => oauthMintHelpers(fn, executable, requestsAliases, functions));
   if (helpers.length === 0) return [];
   const detections = [];
   for (const fn of functions) {
@@ -17639,7 +17639,23 @@ function findOAuthClientCredentialsReuse(rule, file) {
       if (token === void 0) continue;
       const attachment = bearerAttachment(fn, session.name, token.name, executable, functions, token.index);
       if (attachment === void 0 || isStaticallyDeadPythonLine(fn, token.index, executable) || isStaticallyDeadPythonLine(fn, attachment.index, executable) || isInsidePythonLoop(fn, token.index, executable) || isInsidePythonLoop(fn, attachment.index, executable) || pythonLineIndent(executable, token.index) !== pythonFunctionBodyIndent(fn, executable) || pythonLineIndent(executable, attachment.index) !== pythonFunctionBodyIndent(fn, executable)) continue;
-      const consumers = oauthConsumers(fn, session.name, executable, functions, attachment.endIndex);
+      const nextBearer = firstFreshBearerReattachment(
+        fn,
+        session.name,
+        token.name,
+        token.helper,
+        executable,
+        functions,
+        attachment.endIndex
+      );
+      const consumers = oauthConsumers(
+        fn,
+        session.name,
+        executable,
+        functions,
+        attachment.endIndex,
+        nextBearer?.index
+      );
       if (!provesRepeatedOrMultistageUse(fn, consumers, executable)) continue;
       const firstConsumer = consumers[0]?.index ?? fn.end;
       if (hasBoundedUnauthorizedRefresh(
@@ -17697,7 +17713,7 @@ function requestModuleAliases(source) {
   }
   return aliases;
 }
-function oauthMintHelpers(fn, source, requestAliases) {
+function oauthMintHelpers(fn, source, requestAliases, functions) {
   if (fn.indent !== 0) return [];
   const helpers = [];
   const parameters = functionParameters(fn, source);
@@ -17715,13 +17731,15 @@ function oauthMintHelpers(fn, source, requestAliases) {
     const after = source.slice(call.endIndex, fn.end);
     const returned = new RegExp(`^[ \\t]*return\\s+${response}\\.json\\s*\\(\\s*\\)\\s*\\[\\s*["']access_token["']\\s*\\]`, "m").exec(after);
     if (returned?.index === void 0) continue;
+    const tokenIndex = call.endIndex + returned.index;
+    if (isStaticallyDeadPythonLine(fn, absolute, source) || bindingReassignedBetween(fn, match[1], call.endIndex, tokenIndex, source, functions)) continue;
     helpers.push({
       fn,
       sessionParameter: match[2],
       sessionPosition,
       responseVariable: match[1],
       acquisitionIndex: absolute,
-      tokenIndex: call.endIndex + returned.index
+      tokenIndex
     });
   }
   return helpers;
@@ -17749,14 +17767,13 @@ function tokenFromMintHelper(fn, session, helpers, source, functions, afterIndex
     const call = balancedPythonCall(source, open2);
     if (call === void 0) continue;
     const args = topLevelPythonArguments(call.text.slice(1, -1));
-    if (args[helper.sessionPosition]?.trim() !== session || bindingReassignedBetween(fn, session, afterIndex, index, source, functions)) continue;
+    if (functionParameters(fn, source).includes(match[2]) || bindingReassignedBetween(fn, match[2], fn.headerStart, index, source, functions) || args[helper.sessionPosition]?.trim() !== session || bindingReassignedBetween(fn, session, afterIndex, index, source, functions)) continue;
     return { name: match[1], index, helper };
   }
   return void 0;
 }
 function bearerAttachment(fn, session, token, source, functions, afterIndex) {
   const escapedSession = escapeRegExp(session);
-  const escapedToken = escapeRegExp(token);
   const patterns = [
     new RegExp(`^[ \\t]*${escapedSession}\\.headers\\.update\\s*\\(`, "gm"),
     new RegExp(`^[ \\t]*${escapedSession}\\.headers\\s*\\[\\s*["']Authorization["']\\s*\\]\\s*=`, "gm")
@@ -17771,20 +17788,21 @@ function bearerAttachment(fn, session, token, source, functions, afterIndex) {
       const boundedEnd = match[0].includes("update") ? balancedPythonCall(source, source.indexOf("(", index))?.endIndex : lineEnd < 0 ? fn.end : lineEnd;
       if (boundedEnd === void 0) continue;
       const text = source.slice(index, boundedEnd);
-      if (/["']Authorization["']/.test(text) && /Bearer/i.test(text) && new RegExp(`\\b${escapedToken}\\b`).test(text)) {
+      const value = authorizationHeaderValue(text);
+      if (value !== void 0 && bearerValueUsesToken(value, token)) {
         return { index, endIndex: boundedEnd };
       }
     }
   }
   return void 0;
 }
-function oauthConsumers(fn, session, source, functions, afterIndex) {
+function oauthConsumers(fn, session, source, functions, afterIndex, beforeIndex = fn.end) {
   const consumers = [];
   const callStart = /([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\(/g;
   for (const match of fn.body.matchAll(callStart)) {
     if (match.index === void 0 || match[1] === void 0) continue;
     const index = fn.start + match.index;
-    if (index <= afterIndex || !samePythonOwner(functionAt(functions, index), fn)) continue;
+    if (index <= afterIndex || index >= beforeIndex || !samePythonOwner(functionAt(functions, index), fn)) continue;
     const open2 = source.indexOf("(", index + match[1].length);
     const call = balancedPythonCall(source, open2);
     if (call === void 0) continue;
@@ -17796,6 +17814,54 @@ function oauthConsumers(fn, session, source, functions, afterIndex) {
     consumers.push({ index, path: match[1] });
   }
   return consumers.sort((left, right) => left.index - right.index);
+}
+function firstFreshBearerReattachment(fn, session, token, mint, source, functions, afterIndex) {
+  const bodyIndent = pythonFunctionBodyIndent(fn, source);
+  const refresh = new RegExp(
+    `^[ \\t]*${escapeRegExp(token)}\\s*=\\s*${escapeRegExp(mint.fn.name)}\\s*\\(`,
+    "gm"
+  );
+  for (const match of fn.body.matchAll(refresh)) {
+    if (match.index === void 0) continue;
+    const index = fn.start + match.index;
+    if (index <= afterIndex || pythonLineIndent(source, index) !== bodyIndent || !samePythonOwner(functionAt(functions, index), fn) || isStaticallyDeadPythonLine(fn, index, source) || bindingReassignedBetween(fn, mint.fn.name, fn.headerStart, index, source, functions)) continue;
+    const open2 = source.indexOf("(", index + match[0].lastIndexOf(mint.fn.name) + mint.fn.name.length);
+    const call = balancedPythonCall(source, open2);
+    if (call === void 0) continue;
+    const args = topLevelPythonArguments(call.text.slice(1, -1));
+    if (args[mint.sessionPosition]?.trim() !== session) continue;
+    const attachment = bearerAttachment(fn, session, token, source, functions, call.endIndex);
+    if (attachment !== void 0 && pythonLineIndent(source, attachment.index) === bodyIndent) return attachment;
+  }
+  return void 0;
+}
+function authorizationHeaderValue(text) {
+  const key = /["']Authorization["']\s*(?:\]\s*=|:)/.exec(text);
+  if (key?.index === void 0) return void 0;
+  let start = key.index + key[0].length;
+  while (/\s/.test(text[start] ?? "")) start += 1;
+  let depth = 0;
+  let quote = null;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote !== null) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') quote = character;
+    else if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") {
+      if (depth === 0) return text.slice(start, index).trim();
+      depth -= 1;
+    } else if (character === "," && depth === 0) return text.slice(start, index).trim();
+  }
+  return text.slice(start).trim();
+}
+function bearerValueUsesToken(value, token) {
+  if (!/Bearer/i.test(value)) return false;
+  const escaped = escapeRegExp(token);
+  return new RegExp(`\\{\\s*${escaped}(?:\\s*![rsa])?(?:\\s*:[^}]*)?\\s*\\}`).test(value) || new RegExp(`(?:\\+|%)\\s*${escaped}\\b`).test(value) || new RegExp(`\\.format\\s*\\([^)]*\\b${escaped}\\b`).test(value);
 }
 function provesRepeatedOrMultistageUse(fn, consumers, source) {
   if (consumers.some((consumer) => isInsidePythonLoop(fn, consumer.index, source))) return true;
