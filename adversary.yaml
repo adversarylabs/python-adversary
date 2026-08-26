@@ -1,6 +1,6 @@
 name: lang/python
-version: 0.0.12
-description: Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.
+version: 0.0.13
+description: Reviews Python for security, reliability, and correctness hazards, including expiring OAuth bearer reuse.
 
 triggers:
   manual: true

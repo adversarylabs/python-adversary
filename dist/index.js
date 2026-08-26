@@ -17065,7 +17065,7 @@ import { promisify } from "node:util";
 var spec = {
   "id": "python",
   "displayName": "Python",
-  "description": "Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.",
+  "description": "Reviews Python for security, reliability, and correctness hazards, including expiring OAuth bearer reuse.",
   "files": [
     "**/*.py"
   ],
@@ -17342,6 +17342,30 @@ var spec = {
       }
     },
     {
+      "id": "python.oauth-client-credentials-reuse",
+      "title": "Long-running OAuth client reuses one expiring bearer",
+      "summary": "A shared client-credentials bearer is reused across a multi-stage request path without refresh",
+      "category": "reliability",
+      "severity": "medium",
+      "confidence": "medium",
+      "whyItMatters": "OAuth client-credentials access tokens commonly expire. A synchronization that mints once and reuses the bearer across many request stages can cross that boundary and fail partway through its work.",
+      "impact": "Large or slow synchronizations can begin returning unauthorized responses after partial progress, leaving imported state incomplete or inconsistent.",
+      "recommendation": "Track the token expiry and refresh before it, or on 401 re-mint and retry the failed request once while excluding the token endpoint and preventing retry loops.",
+      "complexity": "medium",
+      "tags": [
+        "reliability",
+        "oauth",
+        "authentication",
+        "synchronization"
+      ],
+      "match": {
+        "kind": "oauth-client-credentials-reuse",
+        "files": [
+          "**/*.py"
+        ]
+      }
+    },
+    {
       "id": "python.default-empty-destructive-sync",
       "title": "Missing response collection can trigger destructive reconciliation",
       "summary": "Missing response collection can trigger destructive reconciliation",
@@ -17491,7 +17515,8 @@ async function analyzeRepository(ctx) {
       path: file.path,
       source: file.content,
       changedLines: change.changedLines,
-      status: change.status
+      status: change.status,
+      ...change.previousSource === void 0 ? {} : { previousSource: change.previousSource }
     });
   }
   ctx.summary.files_scanned = sources.length;
@@ -17516,6 +17541,9 @@ function evaluate(rule, sources, allPaths) {
   }
   if (match.kind === "default-empty-destructive-sync") {
     return sources.filter((file) => match.files.some((glob) => matchesGlob(file.path, glob))).flatMap((file) => findDefaultEmptyDestructiveSync(rule, file));
+  }
+  if (match.kind === "oauth-client-credentials-reuse") {
+    return sources.filter((file) => match.files.some((glob) => matchesGlob(file.path, glob))).flatMap((file) => findOAuthClientCredentialsReuse(rule, file));
   }
   const matchingSources = sources.filter(
     (file) => match.files.some((glob) => matchesGlob(file.path, glob)) && !(match.kind === "content" && match.excludeFiles?.some((glob) => matchesGlob(file.path, glob)))
@@ -17559,11 +17587,17 @@ function findDefaultEmptyDestructiveSync(rule, file) {
 }
 function findFunctionBlocks(source) {
   const blocks = [];
-  const definition = /^(?<indent>[ \t]*)(?:async\s+)?def\s+[A-Za-z_]\w*\s*\([^\n]*\)\s*(?:->\s*[^:]+)?\s*:\s*(?:#.*)?$/gm;
+  const definition = /^(?<indent>[ \t]*)(?:async\s+)?def\s+(?<name>[A-Za-z_]\w*)\s*\(/gm;
   for (const match of source.matchAll(definition)) {
     if (match.index === void 0) continue;
     const indent = match.groups?.indent?.length ?? 0;
-    const bodyStart = source.indexOf("\n", match.index) + 1;
+    const open2 = source.indexOf("(", match.index);
+    const parameters = balancedPythonCall(source, open2);
+    if (parameters === void 0) continue;
+    const headerEnd = source.indexOf("\n", parameters.endIndex);
+    const headerTail = source.slice(parameters.endIndex, headerEnd < 0 ? source.length : headerEnd);
+    if (!/^\s*(?:->\s*[^:]+)?\s*:\s*$/.test(headerTail)) continue;
+    const bodyStart = (headerEnd < 0 ? source.length : headerEnd) + 1;
     if (bodyStart <= 0) continue;
     let end = source.length;
     let cursor = bodyStart;
@@ -17577,9 +17611,499 @@ function findFunctionBlocks(source) {
       }
       cursor = nextNewline < 0 ? source.length : nextNewline + 1;
     }
-    blocks.push({ body: source.slice(bodyStart, end), start: bodyStart });
+    blocks.push({
+      body: source.slice(bodyStart, end),
+      start: bodyStart,
+      end,
+      headerStart: match.index,
+      name: match.groups?.name ?? "",
+      indent
+    });
   }
   return blocks;
+}
+function findOAuthClientCredentialsReuse(rule, file) {
+  if (/(?:^|\/)(?:tests?|examples?|docs?|fixtures?|vendor|generated)(?:\/|$)|(?:^|\/)test_[^/]*\.py$|_test\.py$/i.test(file.path)) {
+    return [];
+  }
+  const executable = executablePythonSource(file.source);
+  const functions = findFunctionBlocks(executable);
+  const requestsAliases = requestModuleAliases(executable);
+  if (requestsAliases.size === 0) return [];
+  const helpers = functions.flatMap((fn) => oauthMintHelpers(fn, executable, requestsAliases));
+  if (helpers.length === 0) return [];
+  const detections = [];
+  for (const fn of functions) {
+    for (const session of requestSessions(fn, executable, requestsAliases)) {
+      const token = tokenFromMintHelper(fn, session.name, helpers, executable, functions, session.index);
+      if (token === void 0) continue;
+      const attachment = bearerAttachment(fn, session.name, token.name, executable, functions, token.index);
+      if (attachment === void 0 || isStaticallyDeadPythonLine(fn, token.index, executable) || isStaticallyDeadPythonLine(fn, attachment.index, executable) || isInsidePythonLoop(fn, token.index, executable) || isInsidePythonLoop(fn, attachment.index, executable) || pythonLineIndent(executable, token.index) !== pythonFunctionBodyIndent(fn, executable) || pythonLineIndent(executable, attachment.index) !== pythonFunctionBodyIndent(fn, executable)) continue;
+      const consumers = oauthConsumers(fn, session.name, executable, functions, attachment.endIndex);
+      if (!provesRepeatedOrMultistageUse(fn, consumers, executable)) continue;
+      const firstConsumer = consumers[0]?.index ?? fn.end;
+      if (hasBoundedUnauthorizedRefresh(
+        fn,
+        session.name,
+        token.helper,
+        executable,
+        functions,
+        attachment.index,
+        attachment.endIndex,
+        firstConsumer
+      ) || hasExpiryAwareRefresh(
+        fn,
+        session.name,
+        token.name,
+        token.helper,
+        executable,
+        functions,
+        attachment.endIndex,
+        firstConsumer
+      )) continue;
+      const semanticIndices = [
+        token.helper.acquisitionIndex,
+        token.index,
+        attachment.index,
+        ...consumers.slice(0, 2).map((consumer) => consumer.index)
+      ];
+      const semanticLines = semanticIndices.map((index) => lineAt(file.source, index));
+      const line = file.status === "modified" ? semanticLines.find((candidate) => eligibleOAuthSemanticLine(file, candidate)) : semanticLines[2];
+      if (line === void 0) continue;
+      detections.push({
+        rule,
+        file: file.path,
+        line,
+        snippet: file.source.split(/\r?\n/)[line - 1]?.trim().slice(0, 240) ?? "",
+        label: `${session.name} reuses one client-credentials bearer across ${consumers.length} request stages without refresh`,
+        data: {
+          sessionVariable: session.name,
+          tokenVariable: token.name,
+          mintHelper: token.helper.fn.name,
+          acquisitionLine: lineAt(file.source, token.helper.acquisitionIndex),
+          bearerAttachmentLine: lineAt(file.source, attachment.index),
+          consumerLines: consumers.slice(0, 5).map((consumer) => lineAt(file.source, consumer.index))
+        }
+      });
+    }
+  }
+  return detections;
+}
+function requestModuleAliases(source) {
+  const aliases = /* @__PURE__ */ new Set();
+  for (const match of source.matchAll(/^[ \t]*import\s+requests(?:\s+as\s+([A-Za-z_]\w*))?\s*$/gm)) {
+    const alias = match[1] ?? "requests";
+    if (!new RegExp(`^[ \\t]*${escapeRegExp(alias)}\\s*=`, "m").test(source)) aliases.add(alias);
+  }
+  return aliases;
+}
+function oauthMintHelpers(fn, source, requestAliases) {
+  if (fn.indent !== 0) return [];
+  const helpers = [];
+  const parameters = functionParameters(fn, source);
+  const assignment = /^[ \t]*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.post\s*\(/gm;
+  for (const match of fn.body.matchAll(assignment)) {
+    if (match.index === void 0 || match[1] === void 0 || match[2] === void 0) continue;
+    const absolute = fn.start + match.index;
+    if (!samePythonOwner(functionAt(functionBlocksContaining(source, absolute), absolute), fn)) continue;
+    const sessionPosition = parameters.indexOf(match[2]);
+    if (sessionPosition < 0 || !parameterIsRequestsSession(fn, match[2], source, requestAliases)) continue;
+    const open2 = source.indexOf("(", absolute + match[0].lastIndexOf(".post"));
+    const call = balancedPythonCall(source, open2);
+    if (call === void 0 || !/["']grant_type["']\s*:\s*["']client_credentials["']/.test(call.text) || !/["']client_id["']\s*:/.test(call.text) || !/["']client_secret["']\s*:/.test(call.text)) continue;
+    const response = escapeRegExp(match[1]);
+    const after = source.slice(call.endIndex, fn.end);
+    const returned = new RegExp(`^[ \\t]*return\\s+${response}\\.json\\s*\\(\\s*\\)\\s*\\[\\s*["']access_token["']\\s*\\]`, "m").exec(after);
+    if (returned?.index === void 0) continue;
+    helpers.push({
+      fn,
+      sessionParameter: match[2],
+      sessionPosition,
+      responseVariable: match[1],
+      acquisitionIndex: absolute,
+      tokenIndex: call.endIndex + returned.index
+    });
+  }
+  return helpers;
+}
+function requestSessions(fn, source, requestAliases) {
+  const sessions = [];
+  const pattern = /^[ \t]*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.(?:session|Session)\s*\(\s*\)/gm;
+  for (const match of fn.body.matchAll(pattern)) {
+    if (match.index === void 0 || match[1] === void 0 || match[2] === void 0 || !requestAliases.has(match[2])) continue;
+    const index = fn.start + match.index;
+    if (samePythonOwner(owningPythonFunction(source, index), fn) && pythonLineIndent(source, index) === pythonFunctionBodyIndent(fn, source) && !isStaticallyDeadPythonLine(fn, index, source)) sessions.push({ name: match[1], index });
+  }
+  return sessions;
+}
+function tokenFromMintHelper(fn, session, helpers, source, functions, afterIndex) {
+  const pattern = /^[ \t]*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\(/gm;
+  for (const match of fn.body.matchAll(pattern)) {
+    if (match.index === void 0 || match[1] === void 0 || match[2] === void 0) continue;
+    const index = fn.start + match.index;
+    if (index <= afterIndex || !samePythonOwner(functionAt(functions, index), fn)) continue;
+    const matchingHelpers = helpers.filter((candidate) => candidate.fn.name === match[2]);
+    if (matchingHelpers.length !== 1) continue;
+    const helper = matchingHelpers[0];
+    const open2 = source.indexOf("(", index + match[0].lastIndexOf(match[2]) + match[2].length);
+    const call = balancedPythonCall(source, open2);
+    if (call === void 0) continue;
+    const args = topLevelPythonArguments(call.text.slice(1, -1));
+    if (args[helper.sessionPosition]?.trim() !== session || bindingReassignedBetween(fn, session, afterIndex, index, source, functions)) continue;
+    return { name: match[1], index, helper };
+  }
+  return void 0;
+}
+function bearerAttachment(fn, session, token, source, functions, afterIndex) {
+  const escapedSession = escapeRegExp(session);
+  const escapedToken = escapeRegExp(token);
+  const patterns = [
+    new RegExp(`^[ \\t]*${escapedSession}\\.headers\\.update\\s*\\(`, "gm"),
+    new RegExp(`^[ \\t]*${escapedSession}\\.headers\\s*\\[\\s*["']Authorization["']\\s*\\]\\s*=`, "gm")
+  ];
+  for (const pattern of patterns) {
+    for (const match of fn.body.matchAll(pattern)) {
+      if (match.index === void 0) continue;
+      const index = fn.start + match.index;
+      if (index <= afterIndex || !samePythonOwner(functionAt(functions, index), fn)) continue;
+      if (bindingReassignedBetween(fn, session, afterIndex, index, source, functions) || bindingReassignedBetween(fn, token, afterIndex, index, source, functions)) continue;
+      const lineEnd = source.indexOf("\n", index);
+      const boundedEnd = match[0].includes("update") ? balancedPythonCall(source, source.indexOf("(", index))?.endIndex : lineEnd < 0 ? fn.end : lineEnd;
+      if (boundedEnd === void 0) continue;
+      const text = source.slice(index, boundedEnd);
+      if (/["']Authorization["']/.test(text) && /Bearer/i.test(text) && new RegExp(`\\b${escapedToken}\\b`).test(text)) {
+        return { index, endIndex: boundedEnd };
+      }
+    }
+  }
+  return void 0;
+}
+function oauthConsumers(fn, session, source, functions, afterIndex) {
+  const consumers = [];
+  const callStart = /([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\(/g;
+  for (const match of fn.body.matchAll(callStart)) {
+    if (match.index === void 0 || match[1] === void 0) continue;
+    const index = fn.start + match.index;
+    if (index <= afterIndex || !samePythonOwner(functionAt(functions, index), fn)) continue;
+    const open2 = source.indexOf("(", index + match[1].length);
+    const call = balancedPythonCall(source, open2);
+    if (call === void 0) continue;
+    const terminal = match[1].split(".").at(-1) ?? "";
+    if (!/^(?:sync|fetch|load|list|get|post|put|patch|delete|request|collect|scan|ingest)$/i.test(terminal)) continue;
+    const directSessionRequest = match[1].startsWith(`${session}.`) && /^(?:get|post|put|patch|delete|request)$/i.test(terminal);
+    if (!directSessionRequest && !topLevelPythonArguments(call.text.slice(1, -1)).some((arg) => arg.trim() === session)) continue;
+    if (isStaticallyDeadPythonLine(fn, index, source) || bindingReassignedBetween(fn, session, afterIndex, index, source, functions) || bearerRemovedBetween(session, afterIndex, index, source)) continue;
+    consumers.push({ index, path: match[1] });
+  }
+  return consumers.sort((left, right) => left.index - right.index);
+}
+function provesRepeatedOrMultistageUse(fn, consumers, source) {
+  if (consumers.some((consumer) => isInsidePythonLoop(fn, consumer.index, source))) return true;
+  const bodyIndent = pythonFunctionBodyIndent(fn, source);
+  const sequential = consumers.filter((consumer) => pythonLineIndent(source, consumer.index) === bodyIndent);
+  return sequential.length >= 2;
+}
+function hasBoundedUnauthorizedRefresh(fn, session, mint, source, functions, attachmentIndex, afterIndex, beforeIndex) {
+  const helperCall = /^[ \t]*([A-Za-z_]\w*)\s*\(/gm;
+  for (const match of fn.body.matchAll(helperCall)) {
+    if (match.index === void 0 || match[1] === void 0) continue;
+    const index = fn.start + match.index;
+    if (index <= afterIndex || index >= beforeIndex || !samePythonOwner(functionAt(functions, index), fn) || !samePythonControlPath(fn, attachmentIndex, index, source)) continue;
+    const matchingRefreshes = functions.filter((candidate) => candidate.name === match[1] && candidate.indent === 0);
+    if (matchingRefreshes.length !== 1) continue;
+    const refresh = matchingRefreshes[0];
+    const open2 = source.indexOf("(", index + match[1].length);
+    const call = balancedPythonCall(source, open2);
+    const args = call === void 0 ? [] : topLevelPythonArguments(call.text.slice(1, -1));
+    const sessionPosition = args.findIndex((arg) => arg.trim() === session);
+    if (sessionPosition < 0 || isStaticallyDeadPythonLine(fn, index, source)) continue;
+    const refreshSession = functionParameters(refresh, source)[sessionPosition];
+    if (refreshSession === void 0 || !parameterIsRequestsSession(refresh, refreshSession, source, requestModuleAliases(source))) {
+      continue;
+    }
+    const body = refresh.body;
+    const remints = new RegExp(`\\b${escapeRegExp(mint.fn.name)}\\s*\\(`).test(body);
+    const bounded = /\b(?:retried|retry|attempt)[A-Za-z_]*\b/i.test(body) && /(?:\.add\s*\(|\bin\s+[A-Za-z_]\w*|>=?\s*1|["'](?:X-)?[A-Za-z-]*Retry)/i.test(body);
+    const excludesTokenEndpoint = /if\s+[^:\n]*\.request\.url\s*==\s*[A-Za-z_]\w*[^:\n]*:\s*\n[ \t]+return\b/.test(body) || /if\s+[^:\n]*\.request\.url\s*!=\s*[A-Za-z_]\w*[^:\n]*:/.test(body);
+    const installsResponseHook = new RegExp(
+      `\\b${escapeRegExp(refreshSession)}\\.hooks\\s*\\[\\s*["']response["']\\s*\\][^\\n]*\\.(?:append|insert)\\s*\\(`
+    ).test(body);
+    if (/\.status_code\b/.test(body) && /\b401\b/.test(body) && excludesTokenEndpoint && /(?:token_url|oauth\/token)/i.test(body) && installsResponseHook && remints && bounded && /\.request\.copy\s*\(\s*\)/.test(body) && /\.headers\s*\[\s*["']Authorization["']\s*\]/.test(body) && /Bearer/i.test(body) && new RegExp(`\\b${escapeRegExp(refreshSession)}\\.send\\s*\\(`).test(body)) return true;
+  }
+  return false;
+}
+function hasExpiryAwareRefresh(fn, session, token, mint, source, functions, afterIndex, beforeIndex) {
+  if (!/["']expires_in["']/.test(mint.fn.body)) return false;
+  const clock = String.raw`(?:time\.(?:time|monotonic)\s*\(\)|datetime\.(?:now|utcnow)\s*\(\))`;
+  const deadlines = [];
+  const deadlinePattern = /^[ \t]*([A-Za-z_]\w*)\s*=\s*([^\n]+)$/gm;
+  for (const match of fn.body.matchAll(deadlinePattern)) {
+    if (match.index === void 0 || match[1] === void 0 || match[2] === void 0) continue;
+    const index = fn.start + match.index;
+    const expression = match[2];
+    if (index <= afterIndex || index >= beforeIndex || pythonLineIndent(source, index) !== pythonFunctionBodyIndent(fn, source) || !new RegExp(clock).test(expression) || !/(?:expires?_in|token_ttl)\b/i.test(expression) || !samePythonOwner(functionAt(functions, index), fn) || isStaticallyDeadPythonLine(fn, index, source)) continue;
+    deadlines.push({ name: match[1], index });
+  }
+  const refreshCall = new RegExp(`\\b${escapeRegExp(token)}\\s*=\\s*${escapeRegExp(mint.fn.name)}\\s*\\(`, "g");
+  for (const match of fn.body.matchAll(refreshCall)) {
+    if (match.index === void 0) continue;
+    const index = fn.start + match.index;
+    if (index <= afterIndex || index >= beforeIndex || !samePythonOwner(functionAt(functions, index), fn) || !isInsidePythonConditional(fn, index, source)) continue;
+    const guardingIf = enclosingPythonIfHeader(fn, index, source);
+    if (guardingIf === void 0) continue;
+    const deadline = deadlines.find((candidate) => {
+      if (candidate.index >= guardingIf.index || bindingReassignedBetween(fn, candidate.name, candidate.index, guardingIf.index, source, functions)) return false;
+      const escaped = escapeRegExp(candidate.name);
+      return new RegExp(`(?:${clock})\\s*(?:>=|>)\\s*${escaped}\\b|\\b${escaped}\\s*(?:<=|<)\\s*(?:${clock})`).test(
+        guardingIf.text
+      );
+    });
+    if (deadline === void 0) continue;
+    const open2 = source.indexOf("(", index + match[0].lastIndexOf(mint.fn.name) + mint.fn.name.length);
+    const call = balancedPythonCall(source, open2);
+    const args = call === void 0 ? [] : topLevelPythonArguments(call.text.slice(1, -1));
+    if (args[mint.sessionPosition]?.trim() !== session) continue;
+    const refreshedAttachment = bearerAttachment(fn, session, token, source, functions, call?.endIndex ?? index);
+    if (refreshedAttachment !== void 0 && refreshedAttachment.index < guardingIf.endIndex) {
+      return true;
+    }
+  }
+  return false;
+}
+function enclosingPythonIfHeader(fn, index, source) {
+  const before = source.slice(fn.start, index).split(/\r?\n/);
+  const childIndent = pythonLineIndent(source, index);
+  for (let line = before.length - 1; line >= 0; line -= 1) {
+    const text = before[line] ?? "";
+    const indent = pythonTextIndent(text);
+    if (text.trim() === "" || indent >= childIndent || !/^if\b[^:]*:\s*$/.test(text.trim())) continue;
+    const headerIndex = fn.start + before.slice(0, line).reduce((total, value) => total + value.length + 1, 0);
+    let endIndex = fn.end;
+    const tail = source.slice(source.indexOf("\n", headerIndex) + 1, fn.end).split(/\r?\n/);
+    let cursor = source.indexOf("\n", headerIndex) + 1;
+    for (const candidate of tail) {
+      if (candidate.trim() !== "" && pythonTextIndent(candidate) <= indent) {
+        endIndex = cursor;
+        break;
+      }
+      cursor += candidate.length + 1;
+    }
+    if (index < endIndex) return { index: headerIndex, endIndex, text: text.trim() };
+  }
+  return void 0;
+}
+function functionParameters(fn, source) {
+  const header = source.slice(fn.headerStart, fn.start);
+  const open2 = header.indexOf("(");
+  const close = header.lastIndexOf(")");
+  if (open2 < 0 || close <= open2) return [];
+  return topLevelPythonArguments(header.slice(open2 + 1, close)).map(
+    (parameter) => parameter.trim().replace(/^\*{0,2}/, "").split(/\s*[:=]\s*/, 1)[0] ?? ""
+  );
+}
+function parameterIsRequestsSession(fn, parameter, source, aliases) {
+  const header = source.slice(fn.headerStart, fn.start);
+  return [...aliases].some(
+    (alias) => new RegExp(`\\b${escapeRegExp(parameter)}\\s*:\\s*${escapeRegExp(alias)}\\.Session\\b`).test(header)
+  );
+}
+function executablePythonSource(source) {
+  const output = source.split("");
+  let quote = null;
+  let index = 0;
+  while (index < source.length) {
+    if (quote === "'''" || quote === '"""') {
+      if (source.startsWith(quote, index)) {
+        for (let offset = 0; offset < 3; offset += 1) output[index + offset] = " ";
+        index += 3;
+        quote = null;
+      } else {
+        if (source[index] !== "\n" && source[index] !== "\r") output[index] = " ";
+        index += 1;
+      }
+      continue;
+    }
+    if (quote === "'" || quote === '"') {
+      if (source[index] === "\\") index += 2;
+      else if (source[index] === quote) {
+        quote = null;
+        index += 1;
+      } else index += 1;
+      continue;
+    }
+    if (source.startsWith("'''", index) || source.startsWith('"""', index)) {
+      quote = source.slice(index, index + 3);
+      for (let offset = 0; offset < 3; offset += 1) output[index + offset] = " ";
+      index += 3;
+    } else if (source[index] === "'" || source[index] === '"') {
+      quote = source[index];
+      index += 1;
+    } else if (source[index] === "#") {
+      while (index < source.length && source[index] !== "\n") {
+        output[index] = " ";
+        index += 1;
+      }
+    } else index += 1;
+  }
+  return output.join("");
+}
+function balancedPythonCall(source, openIndex) {
+  if (openIndex < 0 || source[openIndex] !== "(") return void 0;
+  let depth = 0;
+  let quote = null;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote !== null) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') quote = character;
+    else if (character === "(") depth += 1;
+    else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return { text: source.slice(openIndex, index + 1), endIndex: index + 1 };
+    }
+  }
+  return void 0;
+}
+function topLevelPythonArguments(source) {
+  const parts = [];
+  let start = 0;
+  let depth = 0;
+  let quote = null;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote !== null) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') quote = character;
+    else if ("([{ ".trim().includes(character ?? "")) depth += 1;
+    else if (")] }".replaceAll(" ", "").includes(character ?? "")) depth -= 1;
+    else if (character === "," && depth === 0) {
+      parts.push(source.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(source.slice(start));
+  return parts;
+}
+function functionBlocksContaining(source, index) {
+  return findFunctionBlocks(source).filter((fn) => fn.headerStart <= index && index < fn.end);
+}
+function functionAt(functions, index) {
+  return functions.filter((fn) => fn.headerStart <= index && index < fn.end).sort((left, right) => right.indent - left.indent)[0];
+}
+function owningPythonFunction(source, index) {
+  return functionAt(findFunctionBlocks(source), index);
+}
+function samePythonOwner(left, right) {
+  return left !== void 0 && left.headerStart === right.headerStart && left.end === right.end;
+}
+function isInsidePythonLoop(fn, index, source) {
+  return isInsideIndentedControl(fn, index, source, /^(?:async\s+)?(?:for|while)\b/);
+}
+function isInsidePythonConditional(fn, index, source) {
+  return isInsideIndentedControl(fn, index, source, /^if\b/);
+}
+function isStaticallyDeadPythonLine(fn, index, source) {
+  const bodyIndent = pythonFunctionBodyIndent(fn, source);
+  const preceding = source.slice(fn.start, index).split(/\r?\n/);
+  if (preceding.some(
+    (line) => pythonTextIndent(line) === bodyIndent && /^(?:return\b|raise\b)/.test(line.trim())
+  )) return true;
+  const before = source.slice(fn.start, index).split(/\r?\n/);
+  const currentLine = source.slice(source.lastIndexOf("\n", index - 1) + 1, source.indexOf("\n", index) < 0 ? source.length : source.indexOf("\n", index));
+  let containingIndent = currentLine.match(/^[ \t]*/)?.[0].length ?? 0;
+  for (let line = before.length - 1; line >= 0; line -= 1) {
+    const text = before[line] ?? "";
+    if (text.trim() === "") continue;
+    const indent = text.match(/^[ \t]*/)?.[0].length ?? 0;
+    if (indent >= containingIndent || !text.trimEnd().endsWith(":")) continue;
+    if (/^(?:if\s+(?:False|0|None)|while\s+False)\s*:/.test(text.trim())) return true;
+    containingIndent = indent;
+    if (containingIndent <= fn.indent) break;
+  }
+  return false;
+}
+function pythonFunctionBodyIndent(fn, source) {
+  return source.slice(fn.start, fn.end).split(/\r?\n/).filter((line) => line.trim() !== "").map(pythonTextIndent).filter((indent) => indent > fn.indent).sort((left, right) => left - right)[0] ?? fn.indent + 4;
+}
+function pythonLineIndent(source, index) {
+  const start = source.lastIndexOf("\n", index - 1) + 1;
+  const end = source.indexOf("\n", index);
+  return pythonTextIndent(source.slice(start, end < 0 ? source.length : end));
+}
+function pythonTextIndent(line) {
+  return line.match(/^[ \t]*/)?.[0].length ?? 0;
+}
+function samePythonControlPath(fn, left, right, source) {
+  const path = (index) => {
+    const before = source.slice(fn.start, index).split(/\r?\n/);
+    let containingIndent = pythonLineIndent(source, index);
+    const controls = [];
+    for (let line = before.length - 1; line >= 0; line -= 1) {
+      const text = before[line] ?? "";
+      const indent = pythonTextIndent(text);
+      if (text.trim() === "" || indent >= containingIndent || !text.trimEnd().endsWith(":")) continue;
+      if (/^(?:if|elif|else|for|while|try|except|finally|with)\b/.test(text.trim())) {
+        controls.unshift(`${indent}:${text.trim()}`);
+      }
+      containingIndent = indent;
+      if (containingIndent <= fn.indent) break;
+    }
+    return controls;
+  };
+  const leftPath = path(left);
+  const rightPath = path(right);
+  return leftPath.length === rightPath.length && leftPath.every((item, index) => item === rightPath[index]);
+}
+function eligibleOAuthSemanticLine(file, line) {
+  if (!file.changedLines.has(line)) return false;
+  const current = normalizedPythonLine(file.source, line);
+  if (current === "" || file.previousSource === void 0) return current !== "";
+  return !file.previousSource.split(/\r?\n/).some(
+    (_, index) => normalizedPythonLine(file.previousSource ?? "", index + 1) === current
+  );
+}
+function normalizedPythonLine(source, line) {
+  const text = source.split(/\r?\n/)[line - 1] ?? "";
+  return executablePythonSource(text).trim().replace(/\s+/g, " ");
+}
+function bindingReassignedBetween(fn, name, startIndex, endIndex, source, functions) {
+  const escaped = escapeRegExp(name);
+  const pattern = new RegExp(`^[ \\t]*(?:${escaped}\\s*(?::[^=\\n]+)?=|(?:for|with)\\b[^\\n]*\\b(?:as\\s+)?${escaped}\\b)`, "gm");
+  for (const match of fn.body.matchAll(pattern)) {
+    if (match.index === void 0) continue;
+    const index = fn.start + match.index;
+    if (index > startIndex && index < endIndex && samePythonOwner(functionAt(functions, index), fn) && !isStaticallyDeadPythonLine(fn, index, source)) return true;
+  }
+  return false;
+}
+function bearerRemovedBetween(session, startIndex, endIndex, source) {
+  const between = source.slice(startIndex, endIndex);
+  const escaped = escapeRegExp(session);
+  return new RegExp(`\\b${escaped}\\.headers\\s*\\[\\s*["']Authorization["']\\s*\\]\\s*=\\s*(?!f?["']Bearer\\b)`, "i").test(between) || new RegExp(`\\b${escaped}\\.headers\\.(?:clear|pop)\\s*\\(`).test(between);
+}
+function isInsideIndentedControl(fn, index, source, control) {
+  const before = source.slice(fn.start, index).split(/\r?\n/);
+  const currentLine = source.slice(source.lastIndexOf("\n", index - 1) + 1, source.indexOf("\n", index) < 0 ? source.length : source.indexOf("\n", index));
+  let containingIndent = currentLine.match(/^[ \t]*/)?.[0].length ?? 0;
+  for (let line = before.length - 1; line >= 0; line -= 1) {
+    const text = before[line] ?? "";
+    if (text.trim() === "") continue;
+    const indent = text.match(/^[ \t]*/)?.[0].length ?? 0;
+    if (indent >= containingIndent || !text.trimEnd().endsWith(":")) continue;
+    if (control.test(text.trim())) return true;
+    containingIndent = indent;
+    if (containingIndent <= fn.indent) break;
+  }
+  return false;
+}
+function lineAt(source, index) {
+  return source.slice(0, index).split(/\r?\n/).length;
 }
 function findEmptyCollectionDefaults(body, offset) {
   const defaults = [];
@@ -17631,8 +18155,11 @@ async function changedSource(ctx, path) {
   const head = ctx.change?.headRef;
   if (head !== void 0 && !ctx.change?.worktree) args.push(head);
   args.push("--", path);
-  const patch = await gitOutput(ctx.repoPath, args);
-  return { changedLines: changedLineNumbers(patch), status: "modified" };
+  const [patch, previousSource] = await Promise.all([
+    gitOutput(ctx.repoPath, args),
+    gitOutput(ctx.repoPath, ["show", `${base}:${path}`])
+  ]);
+  return { changedLines: changedLineNumbers(patch), status: "modified", previousSource };
 }
 async function existsAtRevision(repoPath, revision, path) {
   try {
@@ -17729,7 +18256,7 @@ function matchesGlob(path, glob) {
 
 // src/index.ts
 function createApp() {
-  const app = new Adversary({ name: "python", version: "0.0.11", review: { maximumFindings: 8 } });
+  const app = new Adversary({ name: "python", version: "0.0.13", review: { maximumFindings: 8 } });
   registerRules(app);
   app.rule("python.review", async (ctx) => analyzeRepository(ctx));
   return app;

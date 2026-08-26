@@ -1,6 +1,6 @@
 # Python adversary
 
-Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.
+Reviews Python for security, reliability, and correctness hazards, including expiring OAuth bearer reuse in long-running request workflows.
 
 ## Goals
 
@@ -11,7 +11,7 @@ available evidence does not justify a finding.
 
 ## Scope
 
-It evaluates Python source for command and code execution, deserialization, SQL construction, TLS, HTTP timeouts, temporary files, template safety, weak hashing, and destructive synchronization defaults.
+It evaluates Python source for command and code execution, deserialization, SQL construction, TLS, HTTP timeouts, temporary files, template safety, weak hashing, destructive synchronization defaults, and structurally proven OAuth client-credentials refresh gaps.
 
 The complete detector or review inventory is maintained in
 [CHECKS.md](CHECKS.md).

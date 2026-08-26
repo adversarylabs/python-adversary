@@ -13,17 +13,18 @@ interface ContentMatch {
 interface MissingContentMatch { kind: "missing-content"; files: string[]; trigger: MatchExpression; required: MatchExpression }
 interface MissingFileMatch { kind: "missing-file"; triggerFiles: string[]; requiredFiles: string[] }
 interface DefaultEmptyDestructiveSyncMatch { kind: "default-empty-destructive-sync"; files: string[] }
+interface OAuthClientCredentialsReuseMatch { kind: "oauth-client-credentials-reuse"; files: string[] }
 export interface RuleSpec {
   id: string; title: string; summary: string; category: string; severity: Severity; confidence: Confidence;
   whyItMatters: string; impact: string; recommendation: string; complexity: "trivial" | "small" | "medium" | "large"; tags: string[];
-  match: ContentMatch | MissingContentMatch | MissingFileMatch | DefaultEmptyDestructiveSyncMatch;
+  match: ContentMatch | MissingContentMatch | MissingFileMatch | DefaultEmptyDestructiveSyncMatch | OAuthClientCredentialsReuseMatch;
 }
 export interface AdversarySpec { id: string; displayName: string; description: string; files: string[]; rules: RuleSpec[] }
 
 export const spec = {
   "id": "python",
   "displayName": "Python",
-  "description": "Reviews Python for shell injection, unsafe deserialization, disabled TLS, and SQL string building.",
+  "description": "Reviews Python for security, reliability, and correctness hazards, including expiring OAuth bearer reuse.",
   "files": [
     "**/*.py"
   ],
@@ -297,6 +298,30 @@ export const spec = {
           "flags": "i"
         },
         "requires": []
+      }
+    },
+    {
+      "id": "python.oauth-client-credentials-reuse",
+      "title": "Long-running OAuth client reuses one expiring bearer",
+      "summary": "A shared client-credentials bearer is reused across a multi-stage request path without refresh",
+      "category": "reliability",
+      "severity": "medium",
+      "confidence": "medium",
+      "whyItMatters": "OAuth client-credentials access tokens commonly expire. A synchronization that mints once and reuses the bearer across many request stages can cross that boundary and fail partway through its work.",
+      "impact": "Large or slow synchronizations can begin returning unauthorized responses after partial progress, leaving imported state incomplete or inconsistent.",
+      "recommendation": "Track the token expiry and refresh before it, or on 401 re-mint and retry the failed request once while excluding the token endpoint and preventing retry loops.",
+      "complexity": "medium",
+      "tags": [
+        "reliability",
+        "oauth",
+        "authentication",
+        "synchronization"
+      ],
+      "match": {
+        "kind": "oauth-client-credentials-reuse",
+        "files": [
+          "**/*.py"
+        ]
       }
     },
     {
