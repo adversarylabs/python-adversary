@@ -17584,38 +17584,62 @@ function evaluate(rule, sources, allPaths) {
   });
 }
 function findSerializerUpdateFieldMappings(rule, file) {
-  const detections = [];
-  const classes = [...file.source.matchAll(/^class\s+[A-Za-z_]\w*\s*\([^\n)]*Serializer[^\n)]*\)\s*:\s*$/gm)];
-  for (const [index, classMatch] of classes.entries()) {
-    if (classMatch.index === void 0) continue;
-    const start = classMatch.index;
-    const end = classes[index + 1]?.index ?? file.source.length;
-    const body = file.source.slice(start, end);
-    const declared = new Set([...body.matchAll(/^    ([A-Za-z_]\w*)\s*=\s*serializers\.[A-Za-z_]\w*\s*\(/gm)].map((match) => match[1] ?? ""));
-    if (declared.size === 0) continue;
-    const functions = findFunctionBlocks(body);
-    const create = functions.find((block) => block.name === "create");
-    const update = functions.find((block) => block.name === "update");
-    if (create === void 0 || update === void 0) continue;
-    const createMappings = createValidatedMappings(create.body);
-    const updateMappings = instanceValidatedMappings(update.body);
-    for (const mapping of updateMappings) {
-      if (!declared.has(mapping.target) || mapping.key === mapping.target) continue;
-      if (!createMappings.some((candidate) => candidate.target === mapping.target && candidate.key === mapping.target)) continue;
-      const absoluteIndex = start + update.start + mapping.index;
-      const line = lineAt(file.source, absoluteIndex);
-      if (file.status === "modified" && !file.changedLines.has(line)) continue;
-      detections.push({
-        rule,
-        file: file.path,
-        line,
-        snippet: file.source.split(/\r?\n/)[line - 1]?.trim().slice(0, 240) ?? "",
-        label: `update maps ${mapping.target} from validated_data[${mapping.key}] while create maps it from validated_data[${mapping.target}]`,
-        data: { modelField: mapping.target, updateKey: mapping.key, createKey: mapping.target }
-      });
-    }
+  return findSerializerClasses(file.source).flatMap((serializer) => serializerMappingDetections(rule, file, serializer));
+}
+function findSerializerClasses(source) {
+  const classes = [];
+  const declaration = /^(?<indent>[ \t]*)class\s+[A-Za-z_]\w*\s*\(/gm;
+  for (const match of source.matchAll(declaration)) {
+    if (match.index === void 0) continue;
+    const inheritance = balancedPythonCall(source, source.indexOf("(", match.index));
+    if (inheritance === void 0 || !/\bSerializer\b/.test(inheritance.text)) continue;
+    const headerEnd = source.indexOf("\n", inheritance.endIndex);
+    const tail = source.slice(inheritance.endIndex, headerEnd < 0 ? source.length : headerEnd);
+    if (!/^\s*:\s*(?:#.*)?$/.test(tail)) continue;
+    const start = (headerEnd < 0 ? source.length : headerEnd) + 1;
+    const body = source.slice(start, pythonBlockEnd(source, start, match.groups?.indent?.length ?? 0));
+    const memberIndent = body.match(/^(?<indent>[ \t]+)\S/m)?.groups?.indent ?? "";
+    if (memberIndent !== "") classes.push({ body, start, memberIndent });
   }
-  return detections;
+  return classes;
+}
+function serializerMappingDetections(rule, file, serializer) {
+  const declared = serializerDeclaredFields(serializer);
+  const functions = findFunctionBlocks(serializer.body);
+  const create = functions.find((block) => block.name === "create");
+  const update = functions.find((block) => block.name === "update");
+  if (declared.size === 0 || create === void 0 || update === void 0) return [];
+  const createMappings = createValidatedMappings(create.body);
+  return instanceValidatedMappings(update.body).flatMap((mapping) => {
+    const agreesOnCreate = createMappings.some((candidate) => candidate.target === mapping.target && candidate.key === mapping.target);
+    if (!declared.has(mapping.target) || mapping.key === mapping.target || !agreesOnCreate) return [];
+    const line = lineAt(file.source, serializer.start + update.start + mapping.index);
+    if (file.status === "modified" && !file.changedLines.has(line)) return [];
+    return [{
+      rule,
+      file: file.path,
+      line,
+      snippet: file.source.split(/\r?\n/)[line - 1]?.trim().slice(0, 240) ?? "",
+      label: `update maps ${mapping.target} from validated_data[${mapping.key}] while create maps it from validated_data[${mapping.target}]`,
+      data: { modelField: mapping.target, updateKey: mapping.key, createKey: mapping.target }
+    }];
+  });
+}
+function serializerDeclaredFields(serializer) {
+  const indent = escapeRegExp(serializer.memberIndent);
+  const declaration = new RegExp(`^${indent}([A-Za-z_]\\w*)\\s*=\\s*serializers\\.[A-Za-z_]\\w*\\s*\\(`, "gm");
+  return new Set([...serializer.body.matchAll(declaration)].map((match) => match[1] ?? ""));
+}
+function pythonBlockEnd(source, start, indent) {
+  let cursor = start;
+  while (cursor < source.length) {
+    const nextNewline = source.indexOf("\n", cursor);
+    const lineEnd = nextNewline < 0 ? source.length : nextNewline;
+    const line = source.slice(cursor, lineEnd);
+    if (line.trim() !== "" && (line.match(/^[ \t]*/)?.[0].length ?? 0) <= indent) return cursor;
+    cursor = nextNewline < 0 ? source.length : nextNewline + 1;
+  }
+  return source.length;
 }
 function instanceValidatedMappings(source) {
   const mappings = [];
