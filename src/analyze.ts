@@ -78,6 +78,12 @@ function evaluate(rule: RuleSpec, sources: SourceFile[], allPaths: string[]): De
       .flatMap((file) => findOAuthClientCredentialsReuse(rule, file));
   }
 
+  if (match.kind === "serializer-update-field-mapping") {
+    return sources
+      .filter((file) => match.files.some((glob) => matchesGlob(file.path, glob)))
+      .flatMap((file) => findSerializerUpdateFieldMappings(rule, file));
+  }
+
   const matchingSources = sources.filter(
     (file) =>
       match.files.some((glob) => matchesGlob(file.path, glob)) &&
@@ -101,6 +107,61 @@ function evaluate(rule: RuleSpec, sources: SourceFile[], allPaths: string[]): De
     if (location === undefined) return [];
     return [{ rule, file: file.path, ...location, label: rule.title, data: { matchedPattern: match.pattern.pattern } }];
   });
+}
+
+function findSerializerUpdateFieldMappings(rule: RuleSpec, file: SourceFile): Detection[] {
+  const detections: Detection[] = [];
+  const classes = [...file.source.matchAll(/^class\s+[A-Za-z_]\w*\s*\([^\n)]*Serializer[^\n)]*\)\s*:\s*$/gm)];
+  for (const [index, classMatch] of classes.entries()) {
+    if (classMatch.index === undefined) continue;
+    const start = classMatch.index;
+    const end = classes[index + 1]?.index ?? file.source.length;
+    const body = file.source.slice(start, end);
+    const declared = new Set([...body.matchAll(/^    ([A-Za-z_]\w*)\s*=\s*serializers\.[A-Za-z_]\w*\s*\(/gm)].map((match) => match[1] ?? ""));
+    if (declared.size === 0) continue;
+    const functions = findFunctionBlocks(body);
+    const create = functions.find((block) => block.name === "create");
+    const update = functions.find((block) => block.name === "update");
+    if (create === undefined || update === undefined) continue;
+    const createMappings = createValidatedMappings(create.body);
+    const updateMappings = instanceValidatedMappings(update.body);
+    for (const mapping of updateMappings) {
+      if (!declared.has(mapping.target) || mapping.key === mapping.target) continue;
+      if (!createMappings.some((candidate) => candidate.target === mapping.target && candidate.key === mapping.target)) continue;
+      const absoluteIndex = start + update.start + mapping.index;
+      const line = lineAt(file.source, absoluteIndex);
+      if (file.status === "modified" && !file.changedLines.has(line)) continue;
+      detections.push({
+        rule,
+        file: file.path,
+        line,
+        snippet: file.source.split(/\r?\n/)[line - 1]?.trim().slice(0, 240) ?? "",
+        label: `update maps ${mapping.target} from validated_data[${mapping.key}] while create maps it from validated_data[${mapping.target}]`,
+        data: { modelField: mapping.target, updateKey: mapping.key, createKey: mapping.target },
+      });
+    }
+  }
+  return detections;
+}
+
+function instanceValidatedMappings(source: string): Array<{ target: string; key: string; index: number }> {
+  const mappings: Array<{ target: string; key: string; index: number }> = [];
+  const expression = /instance\.([A-Za-z_]\w*)\s*=\s*validated_data\s*(?:\.get\(\s*["']([A-Za-z_]\w*)["']|\[\s*["']([A-Za-z_]\w*)["']\s*\])/g;
+  for (const match of source.matchAll(expression)) {
+    if (match.index === undefined) continue;
+    mappings.push({ target: match[1] ?? "", key: match[2] ?? match[3] ?? "", index: match.index });
+  }
+  return mappings;
+}
+
+function createValidatedMappings(source: string): Array<{ target: string; key: string; index: number }> {
+  const mappings: Array<{ target: string; key: string; index: number }> = [];
+  const expression = /(?:instance\.)?([A-Za-z_]\w*)\s*=\s*validated_data\s*(?:\.get\(\s*["']([A-Za-z_]\w*)["']|\[\s*["']([A-Za-z_]\w*)["']\s*\])/g;
+  for (const match of source.matchAll(expression)) {
+    if (match.index === undefined) continue;
+    mappings.push({ target: match[1] ?? "", key: match[2] ?? match[3] ?? "", index: match.index });
+  }
+  return mappings;
 }
 
 interface FunctionBlock { body: string; start: number; end: number; headerStart: number; name: string; indent: number }

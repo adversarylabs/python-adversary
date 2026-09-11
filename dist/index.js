@@ -17071,6 +17071,23 @@ var spec = {
   ],
   "rules": [
     {
+      "id": "python.serializer-update-field-mapping",
+      "title": "Serializer update reads a different validated field than create",
+      "summary": "The serializer's update path assigns a model field from a different validated-data key than its create path",
+      "category": "correctness",
+      "severity": "high",
+      "confidence": "high",
+      "whyItMatters": "Create and update must preserve the same serializer-to-model field contract. A drifted lookup silently writes a fallback or unrelated value on updates.",
+      "impact": "Valid update requests can persist the wrong value even though creation and field validation use the declared field.",
+      "recommendation": "Read the same declared validated-data key in update that create uses for this model field, preserving an intentional documented alias only when both paths agree.",
+      "complexity": "trivial",
+      "tags": ["correctness", "serializer", "field-mapping"],
+      "match": {
+        "kind": "serializer-update-field-mapping",
+        "files": ["**/*.py"]
+      }
+    },
+    {
       "id": "python.shell-true",
       "title": "subprocess uses shell=True with a dynamic command",
       "summary": "subprocess uses shell=True with a dynamic command",
@@ -17545,6 +17562,9 @@ function evaluate(rule, sources, allPaths) {
   if (match.kind === "oauth-client-credentials-reuse") {
     return sources.filter((file) => match.files.some((glob) => matchesGlob(file.path, glob))).flatMap((file) => findOAuthClientCredentialsReuse(rule, file));
   }
+  if (match.kind === "serializer-update-field-mapping") {
+    return sources.filter((file) => match.files.some((glob) => matchesGlob(file.path, glob))).flatMap((file) => findSerializerUpdateFieldMappings(rule, file));
+  }
   const matchingSources = sources.filter(
     (file) => match.files.some((glob) => matchesGlob(file.path, glob)) && !(match.kind === "content" && match.excludeFiles?.some((glob) => matchesGlob(file.path, glob)))
   );
@@ -17562,6 +17582,58 @@ function evaluate(rule, sources, allPaths) {
     if (location === void 0) return [];
     return [{ rule, file: file.path, ...location, label: rule.title, data: { matchedPattern: match.pattern.pattern } }];
   });
+}
+function findSerializerUpdateFieldMappings(rule, file) {
+  const detections = [];
+  const classes = [...file.source.matchAll(/^class\s+[A-Za-z_]\w*\s*\([^\n)]*Serializer[^\n)]*\)\s*:\s*$/gm)];
+  for (const [index, classMatch] of classes.entries()) {
+    if (classMatch.index === void 0) continue;
+    const start = classMatch.index;
+    const end = classes[index + 1]?.index ?? file.source.length;
+    const body = file.source.slice(start, end);
+    const declared = new Set([...body.matchAll(/^    ([A-Za-z_]\w*)\s*=\s*serializers\.[A-Za-z_]\w*\s*\(/gm)].map((match) => match[1] ?? ""));
+    if (declared.size === 0) continue;
+    const functions = findFunctionBlocks(body);
+    const create = functions.find((block) => block.name === "create");
+    const update = functions.find((block) => block.name === "update");
+    if (create === void 0 || update === void 0) continue;
+    const createMappings = createValidatedMappings(create.body);
+    const updateMappings = instanceValidatedMappings(update.body);
+    for (const mapping of updateMappings) {
+      if (!declared.has(mapping.target) || mapping.key === mapping.target) continue;
+      if (!createMappings.some((candidate) => candidate.target === mapping.target && candidate.key === mapping.target)) continue;
+      const absoluteIndex = start + update.start + mapping.index;
+      const line = lineAt(file.source, absoluteIndex);
+      if (file.status === "modified" && !file.changedLines.has(line)) continue;
+      detections.push({
+        rule,
+        file: file.path,
+        line,
+        snippet: file.source.split(/\r?\n/)[line - 1]?.trim().slice(0, 240) ?? "",
+        label: `update maps ${mapping.target} from validated_data[${mapping.key}] while create maps it from validated_data[${mapping.target}]`,
+        data: { modelField: mapping.target, updateKey: mapping.key, createKey: mapping.target }
+      });
+    }
+  }
+  return detections;
+}
+function instanceValidatedMappings(source) {
+  const mappings = [];
+  const expression = /instance\.([A-Za-z_]\w*)\s*=\s*validated_data\s*(?:\.get\(\s*["']([A-Za-z_]\w*)["']|\[\s*["']([A-Za-z_]\w*)["']\s*\])/g;
+  for (const match of source.matchAll(expression)) {
+    if (match.index === void 0) continue;
+    mappings.push({ target: match[1] ?? "", key: match[2] ?? match[3] ?? "", index: match.index });
+  }
+  return mappings;
+}
+function createValidatedMappings(source) {
+  const mappings = [];
+  const expression = /(?:instance\.)?([A-Za-z_]\w*)\s*=\s*validated_data\s*(?:\.get\(\s*["']([A-Za-z_]\w*)["']|\[\s*["']([A-Za-z_]\w*)["']\s*\])/g;
+  for (const match of source.matchAll(expression)) {
+    if (match.index === void 0) continue;
+    mappings.push({ target: match[1] ?? "", key: match[2] ?? match[3] ?? "", index: match.index });
+  }
+  return mappings;
 }
 function findDefaultEmptyDestructiveSync(rule, file) {
   const detections = [];
