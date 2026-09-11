@@ -14,10 +14,11 @@ interface MissingContentMatch { kind: "missing-content"; files: string[]; trigge
 interface MissingFileMatch { kind: "missing-file"; triggerFiles: string[]; requiredFiles: string[] }
 interface DefaultEmptyDestructiveSyncMatch { kind: "default-empty-destructive-sync"; files: string[] }
 interface OAuthClientCredentialsReuseMatch { kind: "oauth-client-credentials-reuse"; files: string[] }
+interface SerializerUpdateFieldMappingMatch { kind: "serializer-update-field-mapping"; files: string[] }
 export interface RuleSpec {
   id: string; title: string; summary: string; category: string; severity: Severity; confidence: Confidence;
   whyItMatters: string; impact: string; recommendation: string; complexity: "trivial" | "small" | "medium" | "large"; tags: string[];
-  match: ContentMatch | MissingContentMatch | MissingFileMatch | DefaultEmptyDestructiveSyncMatch | OAuthClientCredentialsReuseMatch;
+  match: ContentMatch | MissingContentMatch | MissingFileMatch | DefaultEmptyDestructiveSyncMatch | OAuthClientCredentialsReuseMatch | SerializerUpdateFieldMappingMatch;
 }
 export interface AdversarySpec { id: string; displayName: string; description: string; files: string[]; rules: RuleSpec[] }
 
@@ -29,6 +30,23 @@ export const spec = {
     "**/*.py"
   ],
   "rules": [
+    {
+      "id": "python.serializer-update-field-mapping",
+      "title": "Serializer update reads a different validated field than create",
+      "summary": "The serializer's update path assigns a model field from a different validated-data key than its create path",
+      "category": "correctness",
+      "severity": "high",
+      "confidence": "high",
+      "whyItMatters": "Create and update must preserve the same serializer-to-model field contract. A drifted lookup silently writes a fallback or unrelated value on updates.",
+      "impact": "Valid update requests can persist the wrong value even though creation and field validation use the declared field.",
+      "recommendation": "Read the same declared validated-data key in update that create uses for this model field, preserving an intentional documented alias only when both paths agree.",
+      "complexity": "trivial",
+      "tags": ["correctness", "serializer", "field-mapping"],
+      "match": {
+        "kind": "serializer-update-field-mapping",
+        "files": ["**/*.py"]
+      }
+    },
     {
       "id": "python.shell-true",
       "title": "subprocess uses shell=True with a dynamic command",

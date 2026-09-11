@@ -2,6 +2,7 @@
 
 | Rule | Severity | Scans for |
 | --- | --- | --- |
+| `python.serializer-update-field-mapping` | High | Serializer update assigns a declared model field from a different validated-data key than the matching create path |
 | `python.default-empty-destructive-sync` | High | Synchronization code defaults a missing response collection to empty and uses it to drive destructive cleanup |
 | `python.eval-exec-dynamic` | Critical | `eval()` / `exec()` on non-literal input |
 | `python.flask-debug` | High | Flask/FastAPI/Starlette debug or reload enabled for production entrypoints |
