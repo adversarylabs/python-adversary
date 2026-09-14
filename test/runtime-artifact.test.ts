@@ -35,6 +35,6 @@ test("the published runtime executes without node_modules and reports its releas
   };
   const result = await runtime.createApp().run({ input: { source: { path: repository } } });
   assert.equal(result.adversary.name, "python");
-  assert.equal(result.adversary.version, "0.0.15");
+  assert.equal(result.adversary.version, (JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version);
   assert.deepEqual(result.findings, []);
 });
